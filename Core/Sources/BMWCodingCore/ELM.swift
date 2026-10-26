@@ -31,3 +31,22 @@ public enum ELM {
         token.count == digits && token.allSatisfy(\.isHexDigit) ? T(token, radix: 16) : nil
     }
 }
+
+public extension ELM {
+    /// Adapter setup, sent after `ATZ`; every command must answer `OK`. Echo and line feeds off, headers and
+    /// spaces on (so the log and the parser see byte-separated frames), a fixed 200 ms wait for the car,
+    /// 11-bit 500 kbit/s CAN with auto-formatting off (BMW's target address sits in the first data byte, so
+    /// the app builds the ISO-TP frames itself), tester header `6F1`, and flow control with the user-defined
+    /// frame `XX 30 00 00`, whose `XX` `Diag.select` sets per module.
+    static let initSequence = [
+        "ATE0", "ATL0", "ATS1", "ATH1", "ATAT0", "ATST 32", "ATSP6", "ATCAF0", "ATCFC1",
+        "ATSH 6F1", "ATFCSH 6F1", "ATFCSD 00 30 00 00", "ATFCSM 1",
+    ]
+}
+
+/// Who the adapter says it is: `STDI` (the device), `STI` (its firmware) and `ATI` (the ELM327 it emulates).
+public struct AdapterInfo: Equatable, Sendable {
+    public let model: String
+    public let firmware: String
+    public let elmVersion: String
+}
