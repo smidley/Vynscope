@@ -926,7 +926,7 @@ From the survey, pick the identifier that carries the BMW part number and add it
 
 - [ ] **Step 4: Fill the module table**
 
-Add every address the i4 and the X3/X5 answered, with the names Scott confirms from BimmerCode's pages, to `ModuleTable`; extend `tableAndSignedList` with two of them.
+Add every address the i4 answered, with the names Scott confirms from BimmerCode's pages, to `ModuleTable`; extend `tableAndSignedList` with two of them. The F-series car is not available in this phase (Scott's decision, 2026-10-26); its addresses are added when it is.
 
 - [ ] **Step 5: Run everything**
 
@@ -942,12 +942,12 @@ git commit -m "Survey results: real SVK layout, part number, module table"
 
 ---
 
-### Task 16: Phase 1 verification on both cars
+### Task 16: Phase 1 verification on the i4
 
-- [ ] **Step 1: Walk the spec's phase 1 checklist on the i4 and on the X3/X5**
+- [ ] **Step 1: Walk the spec's phase 1 checklist on the i4**
 
-For each car: adapter model and firmware match OBDLink's own app; VIN matches the door sticker; the module list has every module named in the spec that the car has, the three signed ones badged on the i4 and none on the F-series; a backup file exists with every listed module `complete` and non-empty coding; the log for the whole run contains only adapter setup, `22`, `3E` and `10 03`.
+Adapter model and firmware match OBDLink's own app; VIN matches the door sticker; the module list has every module named in the spec that the car has, with the three signed ones badged; a backup file exists with every listed module `complete` and non-empty coding; the log for the whole run contains only adapter setup, `22`, `3E` and `10 03`. The F-series car is not available in this phase (Scott's decision, 2026-10-26); its verification happens when it is, and its year and model stay an open question that does not block phase 1.
 
 - [ ] **Step 2: Record the outcome**
 
-Add a short `Verified` section to the spec with the date, the car, the backup file name and anything that failed; commit. Phase 1 is done when both cars pass.
+Add a short `Verified` section to the spec with the date, the car, the backup file name and anything that failed; commit. Phase 1 is done when the i4 passes.

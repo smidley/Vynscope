@@ -167,7 +167,7 @@ Sketch only; mockups come when the phase starts, and this section is Scott's to 
 
 ## What Scott verifies per phase
 
-Phase 1 in the car, both cars:
+Phase 1 in the car. The i4 first; the F-series car is not available during phase 1 (decided 2026-10-26), so its checks run when it is, without blocking the phase:
 
 - Adapter model and firmware match what OBDLink's app reports.
 - The VIN matches the door sticker.
