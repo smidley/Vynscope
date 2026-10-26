@@ -39,9 +39,11 @@ public enum Discovery {
                 do {
                     for address in addresses {
                         if Task.isCancelled { break }
-                        if let module = try await probe(address, diag: diag, vin: vin) {
-                            continuation.yield(module)
-                        }
+                        // A fresh task does not inherit the cancel. A cancelled `Diag` call would give up
+                        // half-way (its pending-answer wait throws) and leave the module's reply unread, so
+                        // the address in progress is left to run to its end.
+                        let found = try await Task { try await probe(address, diag: diag, vin: vin) }.value
+                        if let module = found { continuation.yield(module) }
                     }
                     continuation.finish()
                 } catch {

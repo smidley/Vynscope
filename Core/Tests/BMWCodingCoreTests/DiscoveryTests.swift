@@ -102,7 +102,29 @@ import Testing
         for try await _ in Discovery.modules(diag: diag, vin: "WBY73AW04RFFAKE19", addresses: [1, 2, 3, 4, 5]) {}
     }
     try await consumer?.value
+    try await Task.sleep(for: .milliseconds(100))  // time for a walk that did not stop to carry on
     #expect(link.sent.filter { $0.hasPrefix("ATCRA") } == ["ATCRA 601", "ATCRA 602", "ATCRA 603"])
+}
+@Test func aCancelDuringAPendingWaitStillFinishesTheAddressInProgress() async throws {
+    let f101 = "01 03 22 F1 01 00 00 00", f18c = "01 03 22 F1 8C 00 00 00"
+    var consumer: Task<Void, any Error>?
+    var asked = 0
+    let link = FakeLink { cmd in
+        guard cmd == f101 else { return cmd.hasPrefix("AT") ? ["OK"] : ["NO DATA"] }
+        asked += 1
+        if asked == 1 { consumer?.cancel() }  // as the module answers "response pending"
+        return [asked == 1 ? "601 F1 03 7F 22 78 00 00 00" : "601 F1 03 7F 22 31 00 00 00"] }
+    consumer = Task {
+        let diag = Diag(link: link, log: Log())
+        for try await _ in Discovery.modules(diag: diag, vin: "WBY73AW04RFFAKE19", addresses: [1, 2]) {}
+    }
+    try await consumer?.value
+    // Diag waits half a second, for real, before it asks again; wait for the end of the address in progress.
+    for _ in 0..<300 where !link.sent.contains(f18c) { try await Task.sleep(for: .milliseconds(10)) }
+    try await Task.sleep(for: .milliseconds(100))  // time for a walk that did not stop to reach address 2
+    #expect(link.sent.filter { $0 == f101 }.count == 2)
+    #expect(link.sent.contains(f18c))
+    #expect(!link.sent.contains("ATCRA 602"))
 }
 @Test func byDefaultItProbesEveryAddressInOrderExceptTheTester() async throws {
     let link = FakeLink { cmd in cmd.hasPrefix("AT") ? ["OK"] : ["NO DATA"] }
