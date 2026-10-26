@@ -2,8 +2,9 @@ import Foundation
 
 public enum CodingError: Error, Equatable {
     /// A module answered none of five identifiers in a row. `after` is how many identifiers `Coding.read` had
-    /// asked by then, the five included.
-    case moduleStoppedAnswering(after: Int)
+    /// asked by then, the five included. `found` holds the data it had read from the module before that, by
+    /// identifier; it is empty when the module never answered.
+    case moduleStoppedAnswering(after: Int, found: [UInt16: [UInt8]] = [:])
 }
 
 /// Reads the coding data of one module: the data identifiers that answer with data.
@@ -22,9 +23,9 @@ public enum Coding {
     /// of any read that comes more than two seconds after the last request to `module`, to hold the session; its
     /// answer is ignored.
     ///
-    /// Throws `CodingError.moduleStoppedAnswering` when five identifiers in a row get no answer at all,
-    /// `CancellationError` between two identifiers once the task is cancelled, and lets the `LinkError`s of
-    /// `diag` through.
+    /// Throws `CodingError.moduleStoppedAnswering`, carrying what was read so far, when five identifiers in a
+    /// row get no answer at all, `CancellationError` between two identifiers once the task is cancelled, and
+    /// lets the `LinkError`s of `diag` through.
     public static func read(
         diag: Diag, module: UInt8, dids: [UInt16], progress: @escaping (Int, Int) -> Void
     ) async throws -> [UInt16: [UInt8]] {
@@ -62,7 +63,7 @@ public enum Coding {
             }
             if case .positive(let data) = result { found[did] = data }
             progress(index + 1, dids.count)
-            if silent >= 5 { throw CodingError.moduleStoppedAnswering(after: index + 1) }
+            if silent >= 5 { throw CodingError.moduleStoppedAnswering(after: index + 1, found: found) }
         }
         return found
     }

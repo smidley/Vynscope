@@ -111,6 +111,16 @@ private func answering(_ pattern: String) -> FakeLink {
     await #expect(throws: CodingError.moduleStoppedAnswering(after: 10)) {
         _ = try await sweep(answering(stopped), ids(stopped.count)) }
 }
+@Test func theStoppedAnsweringErrorCarriesWhatWasReadBeforeIt() async {
+    // Two identifiers answer with data of different lengths, then the module goes silent for five.
+    let link = FakeLink { cmd in
+        switch cmd {
+        case readRequest(0x3000): return ["656 F1 04 62 30 00 AA 00 00"]
+        case readRequest(0x3001): return ["656 F1 05 62 30 01 01 02 00"]
+        default: return cmd.hasPrefix("AT") ? ["OK"] : ["NO DATA"] } }
+    let expected = CodingError.moduleStoppedAnswering(after: 7, found: [0x3000: [0xAA], 0x3001: [0x01, 0x02]])
+    await #expect(throws: expected) { _ = try await sweep(link, ids(7)) }
+}
 @Test func testerPresentGoesOutOnlyBeforeAReadMoreThanTwoSecondsAfterTheLastRequest() async throws {
     let start = ContinuousClock.now
     var elapsed = Duration.zero
