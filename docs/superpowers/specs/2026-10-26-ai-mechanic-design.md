@@ -1,6 +1,6 @@
 # AI Mechanic: design
 
-Written 2026-10-26 from the design conversation with Scott Brant. Status: draft, awaiting the builder check and Scott's approval. This is a second product on the foundation the BMW coding app builds; that app's design is `2026-10-26-bmw-coding-app-design.md` in this folder and this document assumes it.
+Written 2026-10-26 from the design conversation with Scott Brant. Status: builder check done (by the author, after two reviewer runs died on API timeouts); awaiting Scott's approval. This is a second product on the foundation the BMW coding app builds; that app's design is `2026-10-26-bmw-coding-app-design.md` in this folder and this document assumes it.
 
 ## Intent
 
@@ -55,7 +55,7 @@ Agreed order, each usable in the driveway before the next starts:
 
 - The owner's own API key, entered once in a Settings screen and stored in the Keychain. The app never logs it and never sends it anywhere but `api.anthropic.com`.
 - Each conversation sends the car's data (VIN, module identifications, fault codes, coding bytes the mechanic asks for) to Anthropic. Settings say so in one sentence.
-- After each turn the chat shows the turn's token usage and an estimated cost from a built-in price table that Scott can edit in settings; the conversation header shows the running total.
+- After each turn the chat shows the turn's token usage and an estimated cost from a built-in price table that Scott can edit in settings; the conversation header shows the running total. Initial table (my call): `claude-opus-5-5` $4 in, $20 out, $0.20 cache read per million tokens; `claude-sonnet-5-5` $2, $10, $0.20; `claude-haiku-5-5` $0.10, $0.50, $0.01; web search is billed per search by Anthropic and shown as a count, not a price.
 
 ### The car
 
@@ -79,11 +79,11 @@ A fifth step after Backup, enabled once the car is connected and the VIN is read
 
 ### The chat
 
-A conversation view: the mechanic's messages on the left, the owner's on the right, a text field at the bottom. While the mechanic works, each tool call shows as a one-line activity entry in the conversation (`Read 3 fault codes from BDC_BODY3`, `Searched the web: "B1F3E BMW G26"`), so the owner sees every read. Web claims end with numbered sources; tapping a source opens it. After each mechanic turn, a small line shows tokens and estimated cost. Two or three suggested follow-up questions appear as tappable chips when the mechanic offers them (it is asked to end a summary with up to three). A Stop button cancels the current turn. The conversation scrolls, persists on the device per car, and a New conversation button starts over; the health check is re-run on request, not on every entry.
+A conversation view: the mechanic's messages on the left, the owner's on the right, a text field at the bottom. While the mechanic works, each tool call shows as a one-line activity entry in the conversation (`Read 3 fault codes from BDC_BODY3`, `Searched the web: "B1F3E BMW G26"`), so the owner sees every read. Web claims end with numbered sources; tapping a source opens it. After each mechanic turn, a small line shows tokens and estimated cost. Two or three suggested follow-up questions appear as tappable chips when the mechanic offers them (it is asked to end a summary with up to three). A Stop button cancels the current turn. The conversation scrolls, persists on the device per car, and a New conversation button starts over; the health check is re-run on request, not on every entry. A conversation is sent whole on every turn; there is no automatic cut-off in stage 1, the cost line is the signal to start a new one (my call). While the health check runs on the iPhone the screen stays awake, as during a backup (my call).
 
 ### Settings
 
-Reachable from a gear on the AI step: API key (entered once, shown masked, Keychain), model (default `claude-opus-5-5`, a short list), effort for chat turns (default medium), the price table, the one-sentence privacy note, and a Clear conversations button.
+Reachable from a gear on the AI step: API key (entered once, shown masked, Keychain), model (default `claude-opus-5-5`; the list is Opus 5.5, Sonnet 5.5, Haiku 5.5, my call), effort for chat turns (default medium), the price table, the one-sentence privacy note, and a Clear conversations button.
 
 ### Mac
 
