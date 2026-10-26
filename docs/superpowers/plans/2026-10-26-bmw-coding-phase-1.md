@@ -134,7 +134,7 @@ git commit -m "Core package with ELM response-line parser"
 
 **Interfaces:**
 - Produces:
-  - `public enum Reassembly: Equatable, Sendable { case complete([UInt8]); case needFlowControl(expectedLength: Int); case incomplete(received: Int, expected: Int); case none }`
+  - `public enum Reassembly: Equatable, Sendable { case complete([UInt8]); case needFlowControl(expectedLength: Int); case incomplete(received: Int, expected: Int); case empty }`
   - `public enum ISOTP { public static func singleFrame(to target: UInt8, payload: [UInt8]) -> [UInt8]; public static func flowControlFrame(to target: UInt8) -> [UInt8]; public static func reassemble(_ frames: [[UInt8]]) -> Reassembly; public static func hexLine(_ bytes: [UInt8]) -> String }`
   - Frame layout (both directions): byte 0 is the address (target when sending, `0xF1` when receiving), then ISO-TP PCI and payload, padded with `0x00` to 8 bytes. A single frame carries up to 6 payload bytes, a first frame 5, a consecutive frame 6.
 
@@ -162,7 +162,7 @@ git commit -m "Core package with ELM response-line parser"
     let ff: [UInt8] = [0xF1, 0x10, 0x14, 0x62, 0xF1, 0x90, 0x57, 0x42]
     #expect(ISOTP.reassemble([ff]) == .needFlowControl(expectedLength: 20))
     #expect(ISOTP.reassemble([ff, [0xF1, 0x21, 0x59, 0x37, 0x33, 0x41, 0x57, 0x30]]) == .incomplete(received: 11, expected: 20))
-    #expect(ISOTP.reassemble([]) == .none)
+    #expect(ISOTP.reassemble([]) == .empty)
 }
 ```
 
@@ -256,7 +256,7 @@ git commit -m "Log with file mirror"
   - `public extension ELM { static let initSequence: [String] }` = `["ATE0", "ATL0", "ATS1", "ATH1", "ATAT0", "ATST 32", "ATSP6", "ATCAF0", "ATCFC1", "ATSH 6F1", "ATFCSH 6F1", "ATFCSD 00 30 00 00", "ATFCSM 1"]`, sent after `ATZ` (3 s timeout, response discarded).
   - `setUp()` sends `ATZ`, then `initSequence` (each must answer `OK`, otherwise throw `LinkError.adapterError("<cmd>: <line>")`), then `ATI`, `STI`, `STDI`; `AdapterInfo(model: STDI line, firmware: STI line, elmVersion: ATI line)`.
   - `select(module:)` sends `ATCRA 6XX` and `ATFCSD XX 30 00 00` (XX = module address, upper-case hex, two digits; receive id is `0x600 + address` formatted as three hex digits) only when the module differs from the last selected one.
-  - `request` sends `ISOTP.hexLine(ISOTP.singleFrame(to:payload:))`, collects `.frame` lines whose id is `0x600 + module`, reassembles; on `.needFlowControl` it sends `ISOTP.hexLine(ISOTP.flowControlFrame(to:))` and appends the frames from that response; `.complete(p)` with `p[0] == 0x7F` is `.negative(p[2])`, except code `0x78` (response pending) which waits 500 ms and retries the request once; any `.error` line throws `LinkError.adapterError(text)`; `.noData`, `.none` or `.incomplete` give `.noResponse`, and so does anything but `.complete` after the flow-control round trip (both cases log a note with what was received).
+  - `request` sends `ISOTP.hexLine(ISOTP.singleFrame(to:payload:))`, collects `.frame` lines whose id is `0x600 + module`, reassembles; on `.needFlowControl` it sends `ISOTP.hexLine(ISOTP.flowControlFrame(to:))` and appends the frames from that response; `.complete(p)` with `p[0] == 0x7F` is `.negative(p[2])`, except code `0x78` (response pending) which waits 500 ms and retries the request once; any `.error` line throws `LinkError.adapterError(text)`; `.noData`, `.empty` or `.incomplete` give `.noResponse`, and so does anything but `.complete` after the flow-control round trip (both cases log a note with what was received).
   - `readDID` sends `[0x22, hi, lo]`; a positive whose first three bytes are `[0x62, hi, lo]` becomes `.positive(data after those three)`; a positive with any other prefix is `.noResponse` with a note.
   - `testerPresent` sends `[0x3E, 0x00]`, true on `.positive([0x7E, 0x00])`. `enterExtendedSession` sends `[0x10, 0x03]`, true on a positive starting `[0x50, 0x03]`.
   - Test support: `final class FakeLink: CommandLink { init(respond: @escaping (String) -> [String]); var sent: [String] }` where unknown commands answer `["OK"]`.
