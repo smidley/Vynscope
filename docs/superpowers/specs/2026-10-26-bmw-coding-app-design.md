@@ -1,6 +1,6 @@
 # BMW coding app: design
 
-Written 2026-10-26 from the design conversation with Scott Brant. Status: draft, awaiting the builder check and Scott's approval. `BRIEF.md` at the repo root is the fact sheet this grew from; this document is the one a builder plans from.
+Written 2026-10-26 from the design conversation with Scott Brant. Status: builder check done and folded in; awaiting Scott's approval. `BRIEF.md` at the repo root is the fact sheet this grew from; this document is the one a builder plans from.
 
 ## Intent
 
@@ -65,11 +65,13 @@ Probes the module addresses and lists modules as they answer: name, a plain-lang
 
 ### 4 Backup
 
-Reads every coding identifier each listed module answers and writes them all to one file. Shows a progress bar and a row per module with its state: done with a count and size, reading, waiting, or failed with the reason. Done is enabled only when every module is accounted for. Where the file went is shown on screen.
+Reads every coding identifier each listed module answers and writes them all to one file. Shows a progress bar and a row per module with its state: done with a count and size, reading, waiting, or failed with the reason. Done is enabled only when every module is accounted for. Where the file went is shown on screen. The first backup of a car sweeps every identifier and takes about an hour; the screen says so up front. Later backups reuse the remembered identifier sets and take minutes. A full-rescan button forces the hour-long sweep again.
 
 ### Module detail
 
-Opened from a module row. Shows the module's name, description and diagnostic address; its identification (part number, hardware version, software version, and whether its coding is signed); its coding files (CAFD ids with versions); and its coding data as a read-only hex listing with a count and total size. Phase 2 adds an Options section here.
+Opened from a module row. Shows the module's name, description and diagnostic address; its identification (part number, hardware version, software version, and whether its coding is signed); its coding files (CAFD ids with versions); and its coding data as a read-only hex listing with a count and total size.
+
+Opening the detail never starts a coding read. Identification and coding files were read during discovery, so a tap mid-scan shows them at once. The coding data section shows what has already been read: this run's backup if Backup has run, otherwise the latest backup file for this car, otherwise one line saying to run Backup. (My call, made after the builder check.) Phase 2 adds an Options section here.
 
 ### Log
 
@@ -81,6 +83,12 @@ Reachable from a Log button on every step. A sheet on the iPhone, a second windo
 - Backups are one JSON file per run, named by date, time and car nickname. On the iPhone they live in the app's folder, visible in the Files app. On the Mac they go to a folder picked once; the choice persists.
 - Module names and descriptions come from a small built-in table keyed by diagnostic address.
 - Nothing on any step sends a write. There is no raw command console in phase 1.
+
+### Calls I made after the builder check
+
+- The module detail is a view of what has already been read; it never starts a coding sweep.
+- Phase 1 may put a module into the extended diagnostic session to read coding data that the default session refuses, and holds it with tester-present. Nothing else beyond reads goes out.
+- On the iPhone the app keeps the screen awake while a backup runs and declares the Bluetooth central background mode, so a locked phone does not drop the adapter mid-backup.
 
 ### Mac
 
@@ -102,7 +110,9 @@ All vehicle reads are UDS ReadDataByIdentifier (`0x22`). A negative response (`0
 - Module discovery: for each address `0x00` to `0xFF` except the tester, set the receive filter and send one identification request with a short timeout. A module that answers is listed. Lead for the request: the SVK (installed-software table) at DID `0xF101`, which on BMW modules lists hardware, software and coding-file entries, the last being the CAFD ids. The builder confirms the DID on the car; if a module answers nothing to it, TesterPresent (`0x3E`) is the second probe so the module is still listed.
 - Identification: hardware and software versions and coding files from the SVK; part number and serial from the standard identification DIDs (`0xF18C` and neighbours) where the module answers them. Fields a module does not answer are shown as not reported, never blank.
 - Signed or not: read from the module's coding properties. The builder finds the identifier on the car during the DID survey, starting from the SVK's coding-file entries, which differ on signed modules. Until that read exists, the badge comes from a built-in list: the three signed modules on the i4, none on the F-series. Phase 3 is gated on both: a module listed as signed, or read as signed, is never written.
-- Coding data: for each module, read every DID from `0x3000` to `0x3FFF` and keep the ones that answer positively. Out-of-range negatives are skipped silently. Where a module accepts several DIDs in one request, the app batches them; the batch size is a knob that defaults to one. The range and the per-request timeout are knobs too. This is slow by design, minutes per car; the backup screen shows progress so that is fine. The builder measures in the car and tunes the knobs before worrying about anything cleverer.
+- Sessions: if a module answers a coding read with a negative saying the service is not supported in the active session or conditions are not correct, the app enters the extended diagnostic session (`0x10 0x03`) for that module, holds it with TesterPresent (`0x3E`) every two seconds while it reads, and lets it lapse when done. Session control is not a write and the module falls back to its default session on its own. It is the only request besides reads and tester-present that phase 1 sends. (My call, made after the builder check.)
+- Coding data: for each module, read every DID from `0x3000` to `0x3FFF` one at a time and keep the ones that answer positively. Out-of-range negatives are skipped silently. Requests are never batched: a positive answer to a request for several DIDs cannot be split safely without knowing each DID's length. One request costs one BLE round trip, roughly 40 ms, so a full sweep is about three minutes per module and an hour or more for a car with 20 to 30 modules.
+- Remembered sets (Scott's choice after the builder check): the first backup of a module sweeps the full range. The set of identifiers that answered is remembered per module, keyed by the module's address and its coding-file ids with versions, in a small JSON file in the app's folder. Later backups read only that set, which takes seconds to a minute per module. A change in a module's coding-file version drops its remembered set, so the next backup sweeps it fully again. A full-rescan button on the Backup step forces the sweep for every module. Each module in a backup file records which method produced it, so a backup never silently claims more than it read.
 
 ### Backup file
 
@@ -110,7 +120,7 @@ One JSON file per run, written by `Codable`:
 
 - `vin`, `nickname`, `date`, `appVersion`
 - `adapter`: `model`, `firmware`
-- `modules`: an array of `address`, `name`, `signed`, `identification` (`partNumber`, `hardware`, `software`, `serial`, each optional), `codingFiles` (array of strings), `coding` (a map from DID in hex to data in hex), and `status` (`complete`, or `partial` with a reason)
+- `modules`: an array of `address`, `name`, `signed`, `identification` (`partNumber`, `hardware`, `software`, `serial`, each optional), `codingFiles` (array of strings), `coding` (a map from DID in hex to data in hex), `method` (`fullSweep` or `rememberedSet`), and `status` (`complete`, or `partial` with a reason)
 
 A module that failed partway through is kept with `partial` and whatever was read. The file is written once at the end; a run that is cancelled leaves no file.
 
@@ -135,7 +145,7 @@ Roughly a dozen source files. Swift concurrency with actors for the transport; n
 Sketch only; mockups come when the phase starts, and this section is Scott's to veto.
 
 - Input: one JSON option table per coding file, supplied by Scott and imported into the app's folder (Files on the iPhone, the picked folder on the Mac). Format: `cafd` (the id the module reports, without version), `module`, and `options`, each with `name` (BimmerCode's name where one exists), `did`, `byteOffset`, `bitMask`, and `values` mapping a value name to its bits. Producing these tables from BMW's definition files is Scott's job outside the app.
-- Module detail gains an Options section: each option's name, its current value decoded from the module's coding data, and the raw bits. A module whose coding file has no table says so. Values are read live from the car when connected, otherwise from the latest backup.
+- Module detail gains an Options section: each option's name, its current value decoded from the module's coding data, and the raw bits. A module whose coding file has no table says so. Values are read live from the car when connected, which only means the handful of DIDs the table names, never a sweep; otherwise they come from the latest backup.
 - First target: `ACSM_5`, the seat belt chime.
 
 ## Phase 3: write
@@ -163,7 +173,7 @@ Phase 1 in the car, both cars:
 - The VIN matches the door sticker.
 - The module list includes every module named in this document that the car has, and the three signed ones carry the badge on the i4.
 - A backup file exists with every listed module marked `complete` and non-empty coding data for each.
-- The log shows only adapter setup, `0x22` reads and `0x3E` tester-present. Nothing else was sent.
+- The log shows only adapter setup, `0x22` reads, `0x3E` tester-present and, where a module needed it, `0x10 0x03` session control. Nothing else was sent.
 
 Phase 2: the seat belt chime option on `ACSM_5` decodes to the value the car actually has, and at least one other option on another module matches BimmerCode's reading.
 
