@@ -22,6 +22,7 @@ The work ships in phases, each verified by Scott in the car before the next star
 - Writes to the head unit (`HU_MGU`), the body domain controller (`BDC_BODY3`) or the instrument cluster (`KOMBI`) on the i4. Their coding is signed per VIN by BMW's backend and the module rejects unsigned writes. The app reads them like any other module.
 - Parsing BMW's binary CAFD definition files. The app reads a plain option table Scott produces from them (format in phase 2). How he produces it is outside the app.
 - App Store distribution, CarPlay, Android, Windows.
+- AI features. They are a second product on this foundation, designed separately in `2026-10-26-ai-mechanic-design.md`; its stage 1 adds one read service (`0x19`, fault codes) and a standard-OBD mode to the allowed request list when it is built.
 
 ## Anti-goals
 
