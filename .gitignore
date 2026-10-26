@@ -2,3 +2,8 @@
 .DS_Store
 xcuserdata/
 *.xcuserstate
+build/
+BMWCoding.xcodeproj/
+.swiftpm/
+*.xcuserdatad/
+Core/.build/
