@@ -35,12 +35,12 @@ struct BackupStep: View {
             } footer: {
                 #if os(macOS)
                 Text("""
-                    One file per run, in Backups inside the chosen folder (Documents › BMW Coding until one is \
+                    One file per run, in Backups inside the chosen folder (Documents › Vynscope until one is \
                     chosen). Full rescan reads every identifier again.
                     """)
                 #else
                 Text("""
-                    One file per run, in Files: On My iPhone › BMW Coding › Backups. Full rescan reads every \
+                    One file per run, in Files: On My iPhone › Vynscope › Backups. Full rescan reads every \
                     identifier again.
                     """)
                 #endif

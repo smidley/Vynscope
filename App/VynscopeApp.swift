@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct BMWCodingApp: App {
+struct VynscopeApp: App {
     @State private var flow = Flow()
 
     var body: some Scene {

@@ -24,7 +24,7 @@ struct LogView: View {
         .navigationTitle("Log")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                ShareLink("Share", item: LogText(log: flow.log), preview: SharePreview("BMW Coding log"))
+                ShareLink("Share", item: LogText(log: flow.log), preview: SharePreview("Vynscope log"))
             }
             #if os(iOS)
             ToolbarItem(placement: .cancellationAction) {

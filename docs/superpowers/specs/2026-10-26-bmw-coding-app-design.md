@@ -164,7 +164,7 @@ Sketch only; mockups come when the phase starts, and this section is Scott's to 
 - The address table's source.
 - Probe and backup timing, batch size, flow-control details.
 - Project layout, concurrency details, test framework.
-- App name and icon. Default: "BMW Coding".
+- Icon. The app is named Vynscope (decided 2026-10-26); bundle id `com.smidley.vynscope`; the Core package keeps the name `BMWCodingCore`.
 
 ## What Scott verifies per phase
 

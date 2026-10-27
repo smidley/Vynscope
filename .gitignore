@@ -3,9 +3,9 @@
 xcuserdata/
 *.xcuserstate
 build/
-BMWCoding.xcodeproj/
+Vynscope.xcodeproj/
 .swiftpm/
 *.xcuserdatad/
 Core/.build/
 App/Info.plist
-App/BMWCoding.entitlements
+App/Vynscope.entitlements

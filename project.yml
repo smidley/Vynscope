@@ -1,4 +1,4 @@
-name: BMWCoding
+name: Vynscope
 options:
   bundleIdPrefix: com.smidley
   deploymentTarget:
@@ -22,7 +22,7 @@ packages:
   BMWCodingCore:
     path: Core
 targets:
-  BMWCoding:
+  Vynscope:
     type: application
     supportedDestinations: [iOS, macOS]
     sources: [App]
@@ -31,7 +31,7 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: BMW Coding
+        CFBundleDisplayName: Vynscope
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSBluetoothAlwaysUsageDescription: Talks to the OBDLink CX adapter in the car.
@@ -42,7 +42,7 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
     entitlements:
-      path: App/BMWCoding.entitlements
+      path: App/Vynscope.entitlements
       properties:
         com.apple.security.hardened-process: true
         com.apple.security.hardened-process.enhanced-security-version-string: "2"
@@ -51,11 +51,11 @@ targets:
         com.apple.security.hardened-process.platform-restrictions-string: "2"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.smidley.bmwcoding
+        PRODUCT_BUNDLE_IDENTIFIER: com.smidley.vynscope
 schemes:
-  BMWCoding:
+  Vynscope:
     build:
       targets:
-        BMWCoding: all
+        Vynscope: all
     run:
       config: Debug

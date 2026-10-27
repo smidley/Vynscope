@@ -314,12 +314,12 @@ final class Flow {
     #endif
 
     /// The folder for the log, the car book, the remembered sets and the backups: Documents on the iPhone, where
-    /// Files shows it; on the Mac the folder chosen on the Backup step, else `~/Documents/BMW Coding`. Created if
+    /// Files shows it; on the Mac the folder chosen on the Backup step, else `~/Documents/Vynscope`. Created if
     /// missing.
     func appFolder() -> URL {
         #if os(macOS)
         let folder = UserDefaults.standard.string(forKey: Self.folderKey).map { URL(filePath: $0) }
-            ?? URL.documentsDirectory.appending(path: "BMW Coding")
+            ?? URL.documentsDirectory.appending(path: "Vynscope")
         #else
         let folder = URL.documentsDirectory
         #endif
