@@ -187,14 +187,19 @@ private func temporaryFolder() -> URL {
     #expect(try JSONDecoder().decode(Backup.self, from: Data(contentsOf: url)) == backup)  // no date strategy needed
 }
 
-// What `BackupRunner.run` writes for `modules` over `link`, read back from the file. The sets file is in `dir`.
-private func run(_ link: FakeLink, _ modules: [DiscoveredModule], in dir: URL, fullRescan: Bool,
-                 progress: @escaping (BackupProgress) -> Void = { _ in }) async throws -> Backup {
-    let url = try await BackupRunner.run(
+// `BackupRunner.run` over `link`, with the backups and the sets file (`sets.json`) in `dir`: the URL it returns.
+private func runToFile(_ link: FakeLink, _ modules: [DiscoveredModule], in dir: URL, fullRescan: Bool,
+                       progress: @escaping (BackupProgress) -> Void = { _ in }) async throws -> URL {
+    try await BackupRunner.run(
         diag: Diag(link: link, log: Log()), modules: modules, vin: "V", nickname: "x",
         adapter: AdapterInfo(model: "CX", firmware: "5", elmVersion: "1.4b"), appVersion: "0.1",
         store: BackupStore(directory: dir), setsURL: dir.appendingPathComponent("sets.json"),
         fullRescan: fullRescan, progress: progress)
+}
+// What `runToFile` wrote, read back.
+private func run(_ link: FakeLink, _ modules: [DiscoveredModule], in dir: URL, fullRescan: Bool,
+                 progress: @escaping (BackupProgress) -> Void = { _ in }) async throws -> Backup {
+    let url = try await runToFile(link, modules, in: dir, fullRescan: fullRescan, progress: progress)
     return try JSONDecoder().decode(Backup.self, from: Data(contentsOf: url))
 }
 // A module as discovery reports it, with what a test cares about.
@@ -232,7 +237,7 @@ private func discovered(_ address: UInt8, name: String? = nil, signed: Bool = fa
     #expect(remembered.dids(address: 0x56, codingFiles: []) == [0x3000, 0x3002])  // replaced, by identifier
     #expect(remembered.dids(address: 0x5B, codingFiles: []) == nil)  // a partial read is not remembered
 }
-@Test func aRememberedSetReadLeavesTheSetAsItWasAndOneThatAnswersNothingIsPartial() async throws {
+@Test func aRememberedSetReadThatAnswersLessOrNothingIsPartialAndLeavesTheSetAsItWas() async throws {
     let dir = temporaryFolder()
     defer { try? FileManager.default.removeItem(at: dir) }
     var sets = RememberedSets(sets: [:])
@@ -245,9 +250,25 @@ private func discovered(_ address: UInt8, name: String? = nil, signed: Bool = fa
     let saved = try await run(link, [discovered(0x56), discovered(0x5B)], in: dir, fullRescan: false)
     #expect(saved.modules.map(\.method) == [.rememberedSet, .rememberedSet])
     #expect(saved.modules[0].coding == ["3000": "AA"])
+    #expect(saved.modules[0].status == .partial(reason: "1 of 2 remembered identifiers did not answer"))
     #expect(saved.modules[1].coding.isEmpty)
     #expect(saved.modules[1].status == .partial(reason: "no coding identifiers answered"))  // not a quiet empty one
     #expect(RememberedSets.load(from: setsURL) == sets)  // only a full sweep decides what is remembered
+}
+@Test func aStalledRememberedSetReadKeepsTheStallReasonOverTheShortCount() async throws {
+    let dir = temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    var sets = RememberedSets(sets: [:])
+    sets.remember(Array(0x3000...0x3007), address: 0x56, codingFiles: [])
+    try sets.save(to: dir.appendingPathComponent("sets.json"))
+    // One identifier answers, then silence: after six, with eight remembered.
+    let link = FakeLink { cmd in
+        cmd.hasPrefix("AT") ? ["OK"]
+            : cmd == "56 03 22 30 00 00 00 00" ? ["656 F1 04 62 30 00 AA 00 00"] : ["NO DATA"] }
+    let saved = try await run(link, [discovered(0x56)], in: dir, fullRescan: false)
+    #expect(saved.modules[0].method == .rememberedSet)
+    #expect(saved.modules[0].coding == ["3000": "AA"])
+    #expect(saved.modules[0].status == .partial(reason: "module stopped answering after 6 identifiers"))
 }
 @Test func progressReportsEveryChangeFromWaitingThroughReadingToDone() async throws {
     let dir = temporaryFolder()
@@ -320,4 +341,37 @@ private func discovered(_ address: UInt8, name: String? = nil, signed: Bool = fa
     #expect(last?.states == [0x56: .done(identifiers: 1, bytes: 1),
                              0x5B: .failed(String(describing: CancellationError())), 0x60: .waiting])
     #expect(!link.sent.contains { $0.hasPrefix("60") })  // the third module was never asked
+}
+@Test func aRunWhoseSetsCannotBeSavedStillWritesItsBackup() async throws {
+    let dir = temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    // A folder where the sets file belongs: it reads as no sets, and saving the sets to it fails.
+    let setsURL = dir.appendingPathComponent("sets.json")
+    try FileManager.default.createDirectory(at: setsURL, withIntermediateDirectories: true)
+    #expect(throws: (any Error).self) { try RememberedSets(sets: [:]).save(to: setsURL) }
+    let link = FakeLink { cmd in
+        cmd.hasPrefix("AT") ? ["OK"] : cmd == "56 03 22 30 00 00 00 00" ? ["656 F1 04 62 30 00 AA 00 00"]
+            : ["656 F1 03 7F 22 31 00 00 00"] }
+    let url = try await runToFile(link, [discovered(0x56)], in: dir, fullRescan: false)
+    #expect(FileManager.default.fileExists(atPath: url.path))
+    #expect(url.deletingLastPathComponent().path == dir.path)
+    let saved = try JSONDecoder().decode(Backup.self, from: Data(contentsOf: url))  // the file at the returned URL
+    #expect(saved.modules[0].coding == ["3000": "AA"])
+    #expect(saved.modules[0].status == .complete)
+}
+@Test func aCancelInTheLastReadOfTheLastModuleStillLeavesNoFile() async throws {
+    let dir = temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    var task: Task<Backup, any Error>?
+    // The cancel comes while the last identifier of the range is read, so `Coding.read` goes on to return and
+    // only the run itself can still see it.
+    let link = FakeLink { cmd in
+        if cmd == "56 03 22 3F FF 00 00 00" { task?.cancel() }
+        return cmd.hasPrefix("AT") ? ["OK"] : cmd == "56 03 22 30 00 00 00 00" ? ["656 F1 04 62 30 00 AA 00 00"]
+            : ["656 F1 03 7F 22 31 00 00 00"] }
+    task = Task { try await run(link, [discovered(0x56)], in: dir, fullRescan: true) }
+    await #expect(throws: CancellationError.self) { _ = try await task?.value }
+    #expect(link.sent.last == "56 03 22 3F FF 00 00 00")  // the whole range was read
+    #expect(try BackupStore(directory: dir).list().isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("sets.json").path))  // swept in full
 }

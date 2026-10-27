@@ -71,8 +71,8 @@ public struct ModuleBackup: Codable, Equatable {
     /// sweep. Kept so that a backup never claims more than it read.
     public enum Method: String, Codable { case fullSweep, rememberedSet }
 
-    /// `complete` when the read ran to its end and found data; otherwise `partial`, with why the data may lack
-    /// something.
+    /// `complete` when the read ran to its end and found data, all of the remembered set if it asked for one;
+    /// otherwise `partial`, with why the data may lack something.
     public enum Status: Codable, Equatable { case complete, partial(reason: String) }
 }
 
@@ -164,11 +164,13 @@ public enum BackupRunner {
     /// A module with a set remembered in `setsURL` for its coding files is asked for only that set (method
     /// `rememberedSet`), unless `fullRescan`; any other is asked for all of `Coding.fullRange` (`fullSweep`). A
     /// module that stops answering is kept as `partial` with what it gave, and so is one that gives nothing at
-    /// all, and the run goes on with the next module. Any other error, a `LinkError` or the `CancellationError` of
-    /// a cancelled task, ends the run: `progress` reports `.failed` for the module it came on, the error is thrown,
-    /// and neither the sets nor the file are written. At the end the identifiers that answered are remembered for
-    /// every module that was swept in full and is `complete`, the sets are saved, and then the backup, dated when
-    /// the run ended.
+    /// all or, with a remembered set, fewer identifiers than the set holds; the run goes on with the next module.
+    /// Any other error, a `LinkError` or the `CancellationError` of a cancelled task, ends the run: `progress`
+    /// reports `.failed` for the module it came on, the error is thrown, and neither the file nor the sets are
+    /// written; so does a cancel that comes in the last read of the run, though no module is then reported
+    /// `.failed`. At the end the backup is written, dated when the run ended, and then the identifiers that
+    /// answered are remembered for every module that was swept in full and is `complete`. The sets are only a
+    /// cache: if they cannot be saved the run still succeeds, and the next one sweeps those modules in full again.
     public static func run(
         diag: Diag, modules: [DiscoveredModule], vin: String, nickname: String, adapter: AdapterInfo,
         appVersion: String, store: BackupStore, setsURL: URL, fullRescan: Bool,
@@ -196,8 +198,13 @@ public enum BackupRunner {
                     current.didsDone = done
                     progress(current)
                 }
-                // A file whose module has no data must say so, whichever identifiers were asked for.
-                if found.isEmpty { status = .partial(reason: "no coding identifiers answered") }
+                // A file must say when a module gave nothing, or less than was remembered for it.
+                if found.isEmpty {
+                    status = .partial(reason: "no coding identifiers answered")
+                } else if let remembered, found.count < remembered.count {
+                    let missing = remembered.count - found.count
+                    status = .partial(reason: "\(missing) of \(remembered.count) remembered identifiers did not answer")
+                }
             } catch CodingError.moduleStoppedAnswering(after: let asked, found: let answered) {
                 found = answered
                 status = .partial(reason: "module stopped answering after \(asked) identifiers")
@@ -219,10 +226,16 @@ public enum BackupRunner {
                                       serial: serial(of: module)),
                 codingFiles: module.codingFiles, coding: hex(found), method: method, status: status))
         }
-        try sets.save(to: setsURL)
-        return try store.save(Backup(
+        // A cancel that came in the last read was seen by nothing yet, and a cancelled run leaves no file.
+        try Task.checkCancellation()
+        let url = try store.save(Backup(
             vin: vin, nickname: nickname, date: Date(), appVersion: appVersion,
             adapter: .init(model: adapter.model, firmware: adapter.firmware), modules: entries))
+        // The sets are only a cache, so a run that cannot save them still has its backup.
+        // ponytail: the failure is dropped, so a sets file that never saves means a full sweep every run, unannounced.
+        // Say so on the progress or in the log if that turns up.
+        try? sets.save(to: setsURL)
+        return url
     }
 
     /// The serial number the module gave (`0xF18C`) as text: its bytes as ASCII without the blanks and padding
