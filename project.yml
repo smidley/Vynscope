@@ -16,6 +16,8 @@ settings:
     DEVELOPMENT_TEAM: 5CNQA36678            # Scott Brant
     ENABLE_HARDENED_RUNTIME: YES
     ENABLE_APP_SANDBOX: NO                  # as Dustpan
+    ENABLE_ENHANCED_SECURITY: YES           # as Dustpan; arm64e, so `make project` also sets the package flags
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64  # with those flags the package's simulator build is arm64 only
 packages:
   BMWCodingCore:
     path: Core

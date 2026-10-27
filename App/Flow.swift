@@ -89,13 +89,19 @@ final class Flow {
         step = Step(rawValue: step.rawValue - 1) ?? .connect
     }
 
-    /// Connects to the adapter (the saved one, else the first found) and sets it up. A saved adapter that does
-    /// not connect is forgotten, so that the next try scans instead of waiting out the timeout again.
+    /// Connects to the adapter (the saved one, else the first found) and sets it up. A link that was not up may
+    /// reach another car, so the car read before is forgotten. A saved adapter that does not connect is forgotten
+    /// too, so that the next try scans instead of waiting out the timeout again.
     func connect() async {
         guard !busy else { error = "Still working"; return }
         busy = true
         defer { busy = false }
         error = nil
+        if link.state != .ready {
+            adapter = nil
+            diag = nil
+            forgetCar()
+        }
         do {
             try await link.connect()
         } catch {
@@ -112,21 +118,37 @@ final class Flow {
             adapter = try await diag.setUp()
             self.diag = diag
         } catch {
+            // The adapter is in no known setup, so nothing may use it until a setup succeeds.
+            adapter = nil
+            self.diag = nil
             self.error = Self.describe(error)
         }
     }
 
-    /// Drops the adapter and goes back to Connect; whatever waits on the adapter fails. The way out when the radio
-    /// has dropped but the link still reports ready, so every command times out.
+    /// Drops the adapter, or stops a connect in progress, forgets the car and goes back to Connect; whatever waits
+    /// on the adapter fails. The way out when the radio has dropped but the link still reports ready, so every
+    /// command times out.
     func disconnect() {
         link.disconnect()
         adapter = nil
         diag = nil
+        forgetCar()
         step = .connect
     }
 
-    /// Reads the VIN and looks the car up in the car book. A different car from last time empties the module list
-    /// and the backup state, which belonged to the other car.
+    /// Forgets the car read through the adapter and everything found on it, so that nothing of one car is backed
+    /// up under another's VIN.
+    private func forgetCar() {
+        vin = nil
+        car = nil
+        otherCars = []
+        modules = []
+        progress = nil
+        lastBackup = nil
+    }
+
+    /// Reads the VIN and looks the car up in the car book. A different car from last time, or a failed read,
+    /// forgets the car read before and what was found on it.
     func readCar() async {
         await endDiscovery()
         guard let diag else { error = "Not connected"; return }
@@ -136,16 +158,13 @@ final class Flow {
         error = nil
         do {
             let vin = try await VIN.read(diag: diag)
-            if vin != self.vin {
-                modules = []
-                progress = nil
-                lastBackup = nil
-            }
+            if vin != self.vin { forgetCar() }
             self.vin = vin
             let book = CarBook.load(from: file("cars.json"))
             car = book.car(for: vin)
             otherCars = book.cars.filter { $0.vin != vin }
         } catch {
+            forgetCar()
             self.error = Self.describe(error)
         }
     }
@@ -239,6 +258,7 @@ final class Flow {
                     setsURL: file("remembered-dids.json"), fullRescan: fullRescan
                 ) { self.progress = $0 }
             } catch is CancellationError {
+                progress = nil  // the module being read was stopped, not failed
                 error = "Cancelled"
             } catch {
                 self.error = Self.describe(error)

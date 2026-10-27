@@ -5,10 +5,6 @@ struct ConnectStep: View {
     @Environment(Flow.self) private var flow
 
     var body: some View {
-        let linked = switch flow.link.state {
-        case .ready, .failed: true
-        default: false
-        }
         Form {
             Section {
                 LabeledContent("Adapter", value: stateText)
@@ -24,7 +20,7 @@ struct ConnectStep: View {
                 Button("Connect") { Task { await flow.connect() } }
                     .disabled(flow.busy)
                 Button("Disconnect") { flow.disconnect() }
-                    .disabled(!linked)
+                    .disabled(flow.link.state == .off)
                 Button("Forget adapter") { UserDefaults.standard.removeObject(forKey: Flow.adapterKey) }
             } footer: {
                 Text("""
