@@ -951,3 +951,13 @@ Adapter model and firmware match OBDLink's own app; VIN matches the door sticker
 - [ ] **Step 2: Record the outcome**
 
 Add a short `Verified` section to the spec with the date, the car, the backup file name and anything that failed; commit. Phase 1 is done when the i4 passes.
+
+**In-car watch list** (from the whole-branch review; each is a log check, none blocks the checklist above):
+- Lines of the form `XX 30 00 00 00 00 00 00` are ISO-TP flow control sent by the app, not writes; they are allowed in the "nothing else was sent" check.
+- Does the CX keep the BLE link across `ATZ`? If the link drops at setup, use `ATWS` instead.
+- Does `FFF2` accept write-with-response? If writes error, switch the link to write-without-response.
+- After the first sweep, `remembered-dids.json` keys must contain CAFD names; a key like `56|` means the SVK parse missed and a coding-file change would not drop the set.
+- Watch for runs of `7F 22 7F` or `7F 22 22` after `10 03` (session refused or lost), for `7F 22 78` twice in a row and for `7F 22 21` (identifiers the sweep may have skipped).
+- Watch for notes saying a read answered with a different identifier than asked: a late reply after a timeout was misattributed and the next identifier lost.
+- Compare the per-identifier cadence with the Log window open and closed; lock the iPhone once mid-sweep; the first Mac launch asks for Documents access; the pairing dialog must fit the 20 s connect budget.
+- Compare `STDI`/`STI` and the Device Information strings with OBDLink's app; check the first `ATZ` reply for an unsolicited banner shifting replies by one.
