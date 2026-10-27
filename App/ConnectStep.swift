@@ -16,7 +16,8 @@ struct ConnectStep: View {
                     LabeledContent("Model", value: flow.link.deviceModel ?? "not reported")
                     LabeledContent("Firmware", value: flow.link.deviceFirmware ?? "not reported")
                     LabeledContent("Device", value: adapter.model.isEmpty ? "not reported" : adapter.model)
-                    LabeledContent("Device firmware", value: adapter.firmware.isEmpty ? "not reported" : adapter.firmware)
+                    LabeledContent(
+                        "Device firmware", value: adapter.firmware.isEmpty ? "not reported" : adapter.firmware)
                 }
             }
             Section {

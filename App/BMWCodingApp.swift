@@ -40,7 +40,9 @@ struct FlowView: View {
                 }
                 switch flow.step {
                 case .connect: ConnectStep()
-                default: Spacer()
+                case .car: CarStep()
+                case .modules: ModulesStep()
+                case .backup: BackupStep()
                 }
             }
             .frame(maxHeight: .infinity, alignment: .top)
@@ -50,6 +52,7 @@ struct FlowView: View {
                 if flow.step != .connect {
                     ToolbarItem(placement: .navigation) {
                         Button("Back") { flow.back() }
+                            .disabled(flow.backupTask != nil)
                     }
                 }
                 ToolbarItem { LogButton() }

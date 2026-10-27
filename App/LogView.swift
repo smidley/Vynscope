@@ -11,12 +11,16 @@ struct LogView: View {
     #endif
 
     var body: some View {
-        List(flow.log.entries) { entry in
-            Text("\(entry.time, format: logTime) \(mark(entry.direction)) \(entry.text)")
+        ScrollViewReader { proxy in
+            List(flow.log.entries) { entry in
+                Text("\(entry.time, format: logTime) \(mark(entry.direction)) \(entry.text)")
+            }
+            .onAppear {
+                if let last = flow.log.entries.last { proxy.scrollTo(last.id, anchor: .bottom) }
+            }
         }
         .font(.caption)
         .monospaced()
-        .defaultScrollAnchor(.bottom)
         .navigationTitle("Log")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
