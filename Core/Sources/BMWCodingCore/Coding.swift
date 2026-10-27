@@ -5,6 +5,10 @@ public enum CodingError: Error, Equatable {
     /// asked by then, the five included. `found` holds the data it had read from the module before that, by
     /// identifier; it is empty when the module never answered.
     case moduleStoppedAnswering(after: Int, found: [UInt16: [UInt8]] = [:])
+    /// A module refused five identifiers in a row as not supported in the active session (`0x7F`) or under
+    /// conditions not correct (`0x22`), and `Coding.read` could not get them the extended session (see there).
+    /// `after` and `found` as for `moduleStoppedAnswering`.
+    case sessionRefused(after: Int, found: [UInt16: [UInt8]] = [:])
 }
 
 /// Reads the coding data of one module: the data identifiers that answer with data.
@@ -19,13 +23,16 @@ public enum Coding {
     ///
     /// The first time `module` says that the service is not supported in the active session (`0x7F`) or that
     /// conditions are not correct (`0x22`), this asks it for the extended session. If it agrees, that identifier
-    /// is asked again; either way the session is not asked for again in this call. TesterPresent goes out ahead
-    /// of any read that comes more than two seconds after the last request to `module`, to hold the session; its
-    /// answer is ignored.
+    /// is asked again. From then on, five identifiers in a row refused with either code end the read, unless the
+    /// module agreed and this is the first time: then the session is asked for again and the fifth identifier
+    /// asked again, and the read goes on if that one is not refused. TesterPresent goes out ahead of any read
+    /// that comes more than two seconds after the last request to `module`, to hold the session; its answer is
+    /// ignored.
     ///
     /// Throws `CodingError.moduleStoppedAnswering`, carrying what was read so far, when five identifiers in a
-    /// row get no answer at all, `CancellationError` between two identifiers once the task is cancelled, and
-    /// lets the `LinkError`s of `diag` through.
+    /// row get no answer at all, `CodingError.sessionRefused`, likewise, when five in a row are refused and the
+    /// session is not had back, `CancellationError` between two identifiers once the task is cancelled, and lets
+    /// the `LinkError`s of `diag` through.
     public static func read(
         diag: Diag, module: UInt8, dids: [UInt16], progress: @escaping (Int, Int) -> Void
     ) async throws -> [UInt16: [UInt8]] {
@@ -40,10 +47,12 @@ public enum Coding {
         try await diag.select(module: module)
         var found: [UInt16: [UInt8]] = [:]
         var silent = 0  // identifiers in a row that got no answer at all
-        // ponytail: one session entry per call. A module that drops the session half-way answers 0x7F or 0x22
-        // to everything after, and those reads are skipped without a word. Ask again after a run of them if
-        // the car does that.
+        let refusals: [UDSResult] = [.negative(0x7F), .negative(0x22)]
+        var refused = 0  // identifiers in a row refused in the active session; a 0x31 (no such identifier) is none
         var sessionAsked = false
+        // ponytail: when the session is had back only the fifth refused identifier is asked again, so the four
+        // before it are skipped without a word. Ask the whole run again if the car drops the session.
+        var mayReenter = false  // the module agreed to the session, which has not been asked for again yet
         var lastRequest = now()
         // One read, preceded by TesterPresent when the module has heard nothing for over two seconds.
         func ask(_ did: UInt16) async throws -> UDSResult {
@@ -56,14 +65,23 @@ public enum Coding {
         for (index, did) in dids.enumerated() {
             try Task.checkCancellation()  // between two requests, so no answer is left unread
             var result = try await ask(did)
-            if !sessionAsked, result == .negative(0x7F) || result == .negative(0x22) {
+            if !sessionAsked, refusals.contains(result) {
                 sessionAsked = true
                 lastRequest = now()
+                mayReenter = try await diag.enterExtendedSession(module)
+                if mayReenter { result = try await ask(did) }
+            }
+            refused = refusals.contains(result) ? refused + 1 : 0
+            if refused >= 5, mayReenter {  // the session is gone: ask for it again, this once
+                mayReenter = false
+                lastRequest = now()
                 if try await diag.enterExtendedSession(module) { result = try await ask(did) }
+                if !refusals.contains(result) { refused = 0 }
             }
             if case .positive(let data) = result { found[did] = data }
             progress(index + 1, dids.count)
             if silent >= 5 { throw CodingError.moduleStoppedAnswering(after: index + 1, found: found) }
+            if refused >= 5 { throw CodingError.sessionRefused(after: index + 1, found: found) }
         }
         return found
     }

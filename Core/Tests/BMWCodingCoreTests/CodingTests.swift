@@ -102,6 +102,46 @@ private func answering(_ pattern: String) -> FakeLink {
         readRequest(0x3000), "56 02 10 03 00 00 00 00", readRequest(0x3001), readRequest(0x3002)])
     #expect(ticks == [[1, 3], [2, 3], [3, 3]])
 }
+@Test func fiveRefusalsInARowAfterARefusedSessionEndTheReadWithWhatItFound() async {
+    // Two identifiers answer, then every read is refused as not supported in the session, and so is the session.
+    // A 0x31 (no such identifier) is no refusal, and the count starts again after it.
+    let link = FakeLink { cmd in
+        switch cmd {
+        case readRequest(0x3000): return ["656 F1 04 62 30 00 AA 00 00"]
+        case readRequest(0x3001): return ["656 F1 05 62 30 01 01 02 00"]
+        case readRequest(0x3004): return negative(0x31)
+        case "56 02 10 03 00 00 00 00": return ["656 F1 03 7F 10 22 00 00 00"]
+        default: return cmd.hasPrefix("AT") ? ["OK"] : negative(0x7F) } }
+    let expected = CodingError.sessionRefused(after: 10, found: [0x3000: [0xAA], 0x3001: [0x01, 0x02]])
+    await #expect(throws: expected) { _ = try await sweep(link, ids(12)) }
+    #expect(link.sent.filter { $0.hasPrefix("56 02 10") }.count == 1)  // a refused session is not asked for again
+    #expect(link.sent.last == readRequest(0x3009))  // nothing after the fifth refusal in a row
+}
+@Test func aLostSessionIsAskedForAgainOnceAndTheReadGoesOn() async throws {
+    // A module that agrees to the session and answers every identifier in it with AA, but loses the session after
+    // answering each of `drops`; out of the session it refuses every read as not supported in it.
+    func module(dropping drops: Set<UInt16>) -> FakeLink {
+        var session = false
+        return FakeLink { cmd in
+            if cmd == "56 02 10 03 00 00 00 00" { session = true; return ["656 F1 02 50 03 00 00 00 00"] }
+            guard cmd.hasPrefix("56 03 22") else { return cmd.hasPrefix("AT") ? ["OK"] : ["NO DATA"] }
+            guard session else { return negative(0x7F) }
+            let low = cmd.split(separator: " ")[4]
+            if drops.contains(0x3000 + UInt16(low, radix: 16)!) { session = false }
+            return ["656 F1 04 62 30 \(low) AA 00 00"] }
+    }
+    let session = "56 02 10 03 00 00 00 00"
+    // Lost after 0x3001: five refused, the session asked for again, the fifth asked again, and the rest read.
+    let once = module(dropping: [0x3001])
+    #expect(try await sweep(once, ids(8)).keys.sorted() == [0x3000, 0x3001, 0x3006, 0x3007])  // 3002-3005 refused
+    #expect(once.sent.filter { !$0.hasPrefix("AT") } == [readRequest(0x3000), session, readRequest(0x3000)]
+        + (0x3001...0x3006).map(readRequest) + [session, readRequest(0x3006), readRequest(0x3007)])
+    // Lost again after 0x3007: the session is not asked for a third time, and the read ends with what it found.
+    let twice = module(dropping: [0x3001, 0x3007])
+    let found: [UInt16: [UInt8]] = [0x3000: [0xAA], 0x3001: [0xAA], 0x3006: [0xAA], 0x3007: [0xAA]]
+    await #expect(throws: CodingError.sessionRefused(after: 13, found: found)) { _ = try await sweep(twice, ids(16)) }
+    #expect(twice.sent.filter { $0 == session }.count == 2)
+}
 @Test func anAnswerOfAnyKindRestartsTheCountOfSilentIdentifiers() async throws {
     // Four silent, a positive, four silent, a negative, four silent: never five in a row.
     let spaced = "ssssp" + "ssssn" + "ssss"

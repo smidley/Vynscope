@@ -48,7 +48,7 @@ public final class Diag {
     /// Sends one UDS request to `module`, which must be set up and selected, and reads its whole answer,
     /// doing the flow-control round trip by hand when the answer has several frames. Throws
     /// `LinkError.adapterError` as soon as the adapter prints an error line.
-    public func request(_ module: UInt8, _ payload: [UInt8]) async throws -> UDSResult {
+    func request(_ module: UInt8, _ payload: [UInt8]) async throws -> UDSResult {
         let result = try await exchange(module, payload)
         guard result == .negative(0x78) else { return result }
         // ponytail: one fixed wait and one re-ask; a module that stays pending longer reads as

@@ -23,3 +23,10 @@ import Testing
     #expect(ELM.parse("663 -0") == .text("663 -0"))
     #expect(ELM.parse("66G F1") == .text("66G F1"))
 }
+@Test func theSTNResetAndAnyLineWithERRORAreErrors() {
+    #expect(ELM.parse("LV RESET") == .error("LV RESET"))
+    #expect(ELM.parse("FB ERROR") == .error("FB ERROR"))
+    #expect(ELM.parse("BUS INIT: ...ERROR") == .error("BUS INIT: ...ERROR"))
+    #expect(ELM.parse("ELM327 v1.4b") == .text("ELM327 v1.4b"))
+    #expect(ELM.parse("OK") == .text("OK"))
+}

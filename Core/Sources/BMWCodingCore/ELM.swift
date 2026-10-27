@@ -7,16 +7,18 @@ public enum ELMLine: Equatable, Sendable {
 }
 
 public enum ELM {
-    /// Lines the adapter prints when a request failed or was not understood.
+    /// Lines the adapter prints when a request failed or was not understood, and `LV RESET`, the STN's restart on
+    /// low voltage.
     public static let errorTexts: Set<String> = [
         "CAN ERROR", "BUS ERROR", "BUS BUSY", "STOPPED",
-        "UNABLE TO CONNECT", "?", "DATA ERROR", "BUFFER FULL",
+        "UNABLE TO CONNECT", "?", "DATA ERROR", "BUFFER FULL", "LV RESET",
     ]
 
-    /// Classifies one response line (already trimmed by the link). A frame is a first token of exactly
+    /// Classifies one response line (already trimmed by the link). An error is one of `errorTexts` or any line
+    /// with `ERROR` in it, as the STN's `FB ERROR` and `BUS INIT: ...ERROR`. A frame is a first token of exactly
     /// three hex digits (the CAN id, headers on) followed by tokens of exactly two hex digits.
     public static func parse(_ line: String) -> ELMLine {
-        if errorTexts.contains(line) { return .error(line) }
+        if errorTexts.contains(line) || line.contains("ERROR") { return .error(line) }
         if line == "NO DATA" { return .noData }
         let tokens = line.split(separator: " ")
         let id: UInt16? = tokens.first.flatMap { hex($0, digits: 3) }

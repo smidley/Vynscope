@@ -7,7 +7,7 @@ import AppKit
 /// Reads the coding data of every listed module into one backup file.
 struct BackupStep: View {
     @Environment(Flow.self) private var flow
-    /// The file the last run wrote, read back for the modules it marks partial.
+    /// The file the last run wrote, read back for the modules it marks complete or partial.
     @State private var saved: Backup? = nil
     @State private var firstBackup = false
 
@@ -58,7 +58,7 @@ struct BackupStep: View {
                 ForEach(flow.modules) { module in
                     BackupRow(
                         title: module.title, state: flow.progress?.states[module.address],
-                        partial: partialReason(module.address))
+                        status: status(module.address))
                 }
             }
             if let url = flow.lastBackup {
@@ -82,11 +82,10 @@ struct BackupStep: View {
         return (Double(progress.moduleIndex) + current) / Double(max(progress.moduleCount, 1))
     }
 
-    /// Why the saved file marks the module at `address` partial, or nil when it is complete or not saved.
-    private func partialReason(_ address: UInt8) -> String? {
-        guard case .partial(reason: let reason)? = saved?.modules.first(where: { $0.address == address })?.status
-        else { return nil }
-        return reason
+    /// What the saved file says of the module at `address`, or nil when there is no file (a run going on, or one
+    /// that ended without writing it) or the module is not in it.
+    private func status(_ address: UInt8) -> ModuleBackup.Status? {
+        saved?.modules.first(where: { $0.address == address })?.status
     }
 
     #if os(macOS)
@@ -100,11 +99,12 @@ struct BackupStep: View {
     #endif
 }
 
-/// One module of the run: where it stands, and why the file marks it partial when it does.
+/// One module of the run: where it stands, and what the saved file says of it: a mark when it is complete, why when
+/// it is partial. Without a saved file there is neither, so counts in a run or after an aborted one carry no mark.
 struct BackupRow: View {
     let title: String
     let state: BackupProgress.ModuleState?
-    let partial: String?
+    let status: ModuleBackup.Status?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -117,7 +117,7 @@ struct BackupRow: View {
                 case .reading?:
                     Text("reading…")
                 case .done(let identifiers, let bytes)?:
-                    let mark = partial == nil ? " ✓" : ""
+                    let mark = status == .complete ? " ✓" : ""
                     Text("^[\(identifiers) identifier](inflect: true) · \(sizeText(bytes))\(mark)")
                 case .failed?:
                     Text("failed").foregroundStyle(.red)
@@ -128,8 +128,8 @@ struct BackupRow: View {
             if case .failed(let why)? = state {
                 Text(why).font(.caption).foregroundStyle(.red)
             }
-            if let partial {
-                Text("Partial: \(partial)").font(.caption).foregroundStyle(.orange)
+            if case .partial(let reason)? = status {
+                Text("Partial: \(reason)").font(.caption).foregroundStyle(.orange)
             }
         }
     }

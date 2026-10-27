@@ -16,7 +16,7 @@ struct ModuleDetailView: View {
                     .compactMap { $0 }.joined(separator: " · "))
             }
             IdentificationSection(
-                hardware: module.hardware, software: module.software, serial: serial, signed: module.signed)
+                hardware: module.hardware, software: module.software, serial: module.serial, signed: module.signed)
             CodingFilesSection(files: module.codingFiles)
             CodingDataSection(coding: coding)
             #if DEBUG
@@ -32,14 +32,6 @@ struct ModuleDetailView: View {
             coding = flow.latestBackup()?.modules.first { $0.address == module.address }?
                 .coding.sorted { $0.key < $1.key }
         }
-    }
-
-    /// The serial number (identifier `0xF18C`) as text, without the padding around it.
-    private var serial: String? {
-        guard let data = module.identification[0xF18C] else { return nil }
-        let text = String(decoding: data, as: Unicode.ASCII.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
-        return text.isEmpty ? nil : text
     }
 }
 

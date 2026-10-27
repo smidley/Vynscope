@@ -323,7 +323,7 @@ private func discovered(_ address: UInt8, name: String? = nil, signed: Bool = fa
     #expect(saved.adapter == Backup.Adapter(model: "CX", firmware: "5"))
     #expect(abs(saved.date.timeIntervalSince(before)) < 60)  // when the run finished
 }
-@Test func cancellingAbortsTheRunAndKeepsNothingOfTheModulesAlreadyDone() async throws {
+@Test func cancellingAbortsTheRunWithNoFileButKeepsTheSetsOfTheModulesAlreadyDone() async throws {
     let dir = temporaryFolder()
     defer { try? FileManager.default.removeItem(at: dir) }
     var task: Task<Backup, any Error>?
@@ -336,8 +336,9 @@ private func discovered(_ address: UInt8, name: String? = nil, signed: Bool = fa
     var last: BackupProgress?
     task = Task { try await run(link, modules, in: dir, fullRescan: true) { last = $0 } }
     await #expect(throws: CancellationError.self) { _ = try await task?.value }
-    #expect(try BackupStore(directory: dir).list().isEmpty)
-    #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("sets.json").path))  // 0x56 was swept
+    #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["sets.json"])  // and no backup
+    // 0x56 was swept in full; nothing of 0x5B, which was cut short.
+    #expect(RememberedSets.load(from: dir.appendingPathComponent("sets.json")).sets == ["56|": [0x3000]])
     #expect(last?.states == [0x56: .done(identifiers: 1, bytes: 1),
                              0x5B: .failed(String(describing: CancellationError())), 0x60: .waiting])
     #expect(!link.sent.contains { $0.hasPrefix("60") })  // the third module was never asked
@@ -372,6 +373,43 @@ private func discovered(_ address: UInt8, name: String? = nil, signed: Bool = fa
     task = Task { try await run(link, [discovered(0x56)], in: dir, fullRescan: true) }
     await #expect(throws: CancellationError.self) { _ = try await task?.value }
     #expect(link.sent.last == "56 03 22 3F FF 00 00 00")  // the whole range was read
-    #expect(try BackupStore(directory: dir).list().isEmpty)
-    #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("sets.json").path))  // swept in full
+    #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["sets.json"])  // and no backup
+    // It was swept in full before the cancel, so its set is kept.
+    #expect(RememberedSets.load(from: dir.appendingPathComponent("sets.json")).sets == ["56|": [0x3000]])
+}
+@Test func aRunTheLinkDiesInKeepsTheSetsOfTheModulesSweptInFullButWritesNoFile() async throws {
+    let dir = temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    // 0x56 is swept in full; 0x5B answers its first identifier, and the link dies on its third.
+    let link = FakeLink { cmd in
+        switch cmd {
+        case _ where cmd.hasPrefix("AT"): return ["OK"]
+        case "56 03 22 30 00 00 00 00": return ["656 F1 04 62 30 00 AA 00 00"]
+        case "5B 03 22 30 00 00 00 00": return ["65B F1 04 62 30 00 BB 00 00"]
+        case "5B 03 22 30 02 00 00 00": throw LinkError.disconnected
+        default: return ["6\(cmd.prefix(2)) F1 03 7F 22 31 00 00 00"]
+        } }
+    await #expect(throws: LinkError.disconnected) {
+        _ = try await runToFile(link, [discovered(0x56), discovered(0x5B)], in: dir, fullRescan: true) }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["sets.json"])  // and no backup
+    #expect(RememberedSets.load(from: dir.appendingPathComponent("sets.json")).sets == ["56|": [0x3000]])
+}
+@Test func aModuleThatKeepsRefusingInTheSessionIsPartialWithWhatItGaveAndNotRemembered() async throws {
+    let dir = temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    // 0x56 answers 0x3000, then refuses every read and the session; 0x5B answers 0x3000 and has nothing else.
+    let link = FakeLink { cmd in
+        switch cmd {
+        case _ where cmd.hasPrefix("AT"): return ["OK"]
+        case "56 03 22 30 00 00 00 00": return ["656 F1 04 62 30 00 AA 00 00"]
+        case "56 02 10 03 00 00 00 00": return ["656 F1 03 7F 10 22 00 00 00"]
+        case _ where cmd.hasPrefix("56"): return ["656 F1 03 7F 22 7F 00 00 00"]
+        case "5B 03 22 30 00 00 00 00": return ["65B F1 04 62 30 00 BB 00 00"]
+        default: return ["65B F1 03 7F 22 31 00 00 00"]
+        } }
+    let saved = try await run(link, [discovered(0x56), discovered(0x5B)], in: dir, fullRescan: true)
+    #expect(saved.modules[0].status == .partial(reason: "6 identifiers refused in the active session"))
+    #expect(saved.modules[0].coding == ["3000": "AA"])
+    #expect(saved.modules[1].status == .complete)  // the run went on
+    #expect(RememberedSets.load(from: dir.appendingPathComponent("sets.json")).sets == ["5B|": [0x3000]])
 }

@@ -155,28 +155,33 @@ public struct BackupProgress: Equatable, Sendable {
 }
 
 public enum BackupRunner {
-    /// The serial number, which discovery reads from every module.
-    private static let serialDID: UInt16 = 0xF18C
-
     /// Reads the coding data of `modules`, one module after the other in the order given, and writes one backup
     /// file with `store`, whose URL it returns. `progress` gets the state after every change.
     ///
     /// A module with a set remembered in `setsURL` for its coding files is asked for only that set (method
     /// `rememberedSet`), unless `fullRescan`; any other is asked for all of `Coding.fullRange` (`fullSweep`). A
-    /// module that stops answering is kept as `partial` with what it gave, and so is one that gives nothing at
-    /// all or, with a remembered set, fewer identifiers than the set holds; the run goes on with the next module.
-    /// Any other error, a `LinkError` or the `CancellationError` of a cancelled task, ends the run: `progress`
-    /// reports `.failed` for the module it came on, the error is thrown, and neither the file nor the sets are
-    /// written; so does a cancel that comes in the last read of the run, though no module is then reported
-    /// `.failed`. At the end the backup is written, dated when the run ended, and then the identifiers that
-    /// answered are remembered for every module that was swept in full and is `complete`. The sets are only a
-    /// cache: if they cannot be saved the run still succeeds, and the next one sweeps those modules in full again.
+    /// module that stops answering or keeps refusing in the active session is kept as `partial` with what it gave,
+    /// and so is one that gives nothing at all or, with a remembered set, fewer identifiers than the set holds; the
+    /// run goes on with the next module. Any other error, a `LinkError` or the `CancellationError` of a cancelled
+    /// task, ends the run: `progress` reports `.failed` for the module it came on, the error is thrown, and no file
+    /// is written; so does a cancel that comes in the last read of the run, though no module is then reported
+    /// `.failed`. At the end the backup is written, dated when the run ended. The identifiers that answered are
+    /// remembered for every module that was swept in full and is `complete`, and when there are any the sets are
+    /// saved however the run ends, after the backup when there is one, so that a run cut short does not sweep those
+    /// modules again. The sets are only a cache: if they cannot be saved the run still succeeds, and the next one
+    /// sweeps those modules in full again.
     public static func run(
         diag: Diag, modules: [DiscoveredModule], vin: String, nickname: String, adapter: AdapterInfo,
         appVersion: String, store: BackupStore, setsURL: URL, fullRescan: Bool,
         progress: @escaping (BackupProgress) -> Void
     ) async throws -> URL {
         var sets = RememberedSets.load(from: setsURL)
+        var learned = false  // a set was remembered in this run
+        // Saved however the run ends, so that one cut short keeps what its full sweeps found. The sets are only a
+        // cache: on success they go after the backup, so a run that cannot save them still has it.
+        // ponytail: the failure is dropped, so a sets file that never saves means a full sweep every run, unannounced.
+        // Say so on the progress or in the log if that turns up.
+        defer { if learned { try? sets.save(to: setsURL) } }
         var current = BackupProgress(
             moduleIndex: 0, moduleCount: modules.count, didsDone: 0, didsTotal: 0, currentAddress: 0,
             states: modules.reduce(into: [:]) { $0[$1.address] = .waiting })
@@ -208,6 +213,9 @@ public enum BackupRunner {
             } catch CodingError.moduleStoppedAnswering(after: let asked, found: let answered) {
                 found = answered
                 status = .partial(reason: "module stopped answering after \(asked) identifiers")
+            } catch CodingError.sessionRefused(after: let asked, found: let answered) {
+                found = answered
+                status = .partial(reason: "\(asked) identifiers refused in the active session")
             } catch {
                 current.states[module.address] = .failed(String(describing: error))
                 progress(current)
@@ -218,12 +226,13 @@ public enum BackupRunner {
             progress(current)
             if method == .fullSweep, status == .complete {
                 sets.remember(found.keys.sorted(), address: module.address, codingFiles: module.codingFiles)
+                learned = true
             }
             entries.append(ModuleBackup(
                 address: module.address, name: module.name, signed: module.signed,
                 // No identifier for the part number is known yet.
                 identification: .init(partNumber: nil, hardware: module.hardware, software: module.software,
-                                      serial: serial(of: module)),
+                                      serial: module.serial),
                 codingFiles: module.codingFiles, coding: hex(found), method: method, status: status))
         }
         // A cancel that came in the last read was seen by nothing yet, and a cancelled run leaves no file.
@@ -231,20 +240,7 @@ public enum BackupRunner {
         let url = try store.save(Backup(
             vin: vin, nickname: nickname, date: Date(), appVersion: appVersion,
             adapter: .init(model: adapter.model, firmware: adapter.firmware), modules: entries))
-        // The sets are only a cache, so a run that cannot save them still has its backup.
-        // ponytail: the failure is dropped, so a sets file that never saves means a full sweep every run, unannounced.
-        // Say so on the progress or in the log if that turns up.
-        try? sets.save(to: setsURL)
         return url
-    }
-
-    /// The serial number the module gave (`0xF18C`) as text: its bytes as ASCII without the blanks and padding
-    /// around them, or `nil` when it gave none or only padding.
-    private static func serial(of module: DiscoveredModule) -> String? {
-        guard let data = module.identification[serialDID] else { return nil }
-        let text = String(decoding: data, as: Unicode.ASCII.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
-        return text.isEmpty ? nil : text
     }
 
     /// The data as the file holds it: identifiers as four upper-case hex digits, data as upper-case hex without

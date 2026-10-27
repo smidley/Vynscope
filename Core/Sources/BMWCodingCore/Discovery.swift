@@ -1,3 +1,5 @@
+import Foundation
+
 /// A module that answered the probe, with what it said about itself.
 public struct DiscoveredModule: Identifiable, Equatable, Sendable {
     public var id: UInt8 { address }
@@ -17,15 +19,26 @@ public struct DiscoveredModule: Identifiable, Equatable, Sendable {
     /// True when the module answered the first identification read over UDS, even with a negative response;
     /// false when it only confirmed TesterPresent.
     public var answeredIdentification: Bool
+
+    /// The serial number the module gave (`Discovery.serialDID`) as text: its bytes as ASCII without the blanks and
+    /// padding around them, or `nil` when it gave none or only padding.
+    public var serial: String? {
+        guard let data = identification[Discovery.serialDID] else { return nil }
+        let text = String(decoding: data, as: Unicode.ASCII.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
+        return text.isEmpty ? nil : text
+    }
 }
 
 public enum Discovery {
     /// The installed-software table (SVK). Every address is probed with it, and its entries fill
     /// `DiscoveredModule.codingFiles`, `hardware` and `software`.
     private static let svkDID: UInt16 = 0xF101
+    /// The serial number, which `DiscoveredModule.serial` gives as text.
+    public static let serialDID: UInt16 = 0xF18C
 
     /// The identifiers read from every module that is there, in this order.
-    public static let identificationDIDs: [UInt16] = [svkDID, 0xF18C]
+    public static let identificationDIDs: [UInt16] = [svkDID, serialDID]
 
     /// Walks `addresses` in order and yields each module that answers, as it answers. The stream finishes after
     /// the last address, or with the error `diag` throws. The default addresses leave out `0xF1`, the tester's

@@ -13,7 +13,7 @@ import Observation
 @Observable
 public final class BLELink: NSObject, CommandLink {
     /// `.connecting` runs from finding the adapter to the confirmed subscription. `.failed` carries what to
-    /// show: why connecting failed, or that the adapter dropped.
+    /// show: why connecting failed, or that the adapter dropped or Bluetooth went off.
     public enum State: Equatable { case off, scanning, connecting, ready, failed(String) }
 
     public private(set) var state: State = .off
@@ -256,6 +256,11 @@ public final class BLELink: NSObject, CommandLink {
 
 extension BLELink: @preconcurrency CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        // Bluetooth off ends a scan or a connection without any callback of their own, so it is ended here; a
+        // connect still waiting for power checks the state itself, to say why it cannot go on.
+        if central.state != .poweredOn, state != .off, waiter?.event != .power {
+            tearDown(.failed("Bluetooth is off"))
+        }
         wake(.power)
     }
 
@@ -286,7 +291,7 @@ extension BLELink: @preconcurrency CBCentralManagerDelegate {
         _ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: (any Error)?
     ) {
         guard peripheral === adapter else { return }  // not ours, or a disconnect we asked for
-        tearDown(.failed("Adapter disconnected"))
+        tearDown(.failed("Adapter disconnected: \(error?.localizedDescription ?? "no reason given")"))
     }
 }
 
