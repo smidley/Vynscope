@@ -408,7 +408,7 @@ private func discovered(_ address: UInt8, name: String? = nil, signed: Bool = fa
         default: return ["65B F1 03 7F 22 31 00 00 00"]
         } }
     let saved = try await run(link, [discovered(0x56), discovered(0x5B)], in: dir, fullRescan: true)
-    #expect(saved.modules[0].status == .partial(reason: "6 identifiers refused in the active session"))
+    #expect(saved.modules[0].status == .partial(reason: "session refused after 6 identifiers"))
     #expect(saved.modules[0].coding == ["3000": "AA"])
     #expect(saved.modules[1].status == .complete)  // the run went on
     #expect(RememberedSets.load(from: dir.appendingPathComponent("sets.json")).sets == ["5B|": [0x3000]])

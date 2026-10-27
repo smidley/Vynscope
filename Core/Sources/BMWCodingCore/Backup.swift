@@ -215,7 +215,7 @@ public enum BackupRunner {
                 status = .partial(reason: "module stopped answering after \(asked) identifiers")
             } catch CodingError.sessionRefused(after: let asked, found: let answered) {
                 found = answered
-                status = .partial(reason: "\(asked) identifiers refused in the active session")
+                status = .partial(reason: "session refused after \(asked) identifiers")
             } catch {
                 current.states[module.address] = .failed(String(describing: error))
                 progress(current)

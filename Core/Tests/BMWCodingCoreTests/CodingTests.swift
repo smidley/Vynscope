@@ -117,30 +117,40 @@ private func answering(_ pattern: String) -> FakeLink {
     #expect(link.sent.filter { $0.hasPrefix("56 02 10") }.count == 1)  // a refused session is not asked for again
     #expect(link.sent.last == readRequest(0x3009))  // nothing after the fifth refusal in a row
 }
-@Test func aLostSessionIsAskedForAgainOnceAndTheReadGoesOn() async throws {
-    // A module that agrees to the session and answers every identifier in it with AA, but loses the session after
-    // answering each of `drops`; out of the session it refuses every read as not supported in it.
-    func module(dropping drops: Set<UInt16>) -> FakeLink {
+@Test func aLostSessionIsTakenBackOnceAndWhatItRefusedIsAskedAgain() async throws {
+    // A module that agrees to the session and answers every identifier in it with AA, except those in `refusing`,
+    // which it refuses even there (0x22), and loses the session after answering each of `drops`; out of the session
+    // it refuses every read as not supported in it.
+    func module(dropping drops: Set<UInt16>, refusing: Set<UInt16> = []) -> FakeLink {
         var session = false
         return FakeLink { cmd in
             if cmd == "56 02 10 03 00 00 00 00" { session = true; return ["656 F1 02 50 03 00 00 00 00"] }
             guard cmd.hasPrefix("56 03 22") else { return cmd.hasPrefix("AT") ? ["OK"] : ["NO DATA"] }
             guard session else { return negative(0x7F) }
             let low = cmd.split(separator: " ")[4]
-            if drops.contains(0x3000 + UInt16(low, radix: 16)!) { session = false }
+            let did = 0x3000 + UInt16(low, radix: 16)!
+            if refusing.contains(did) { return negative(0x22) }
+            if drops.contains(did) { session = false }
             return ["656 F1 04 62 30 \(low) AA 00 00"] }
     }
+    // Every one of `dids` with the data AA.
+    func aa(_ dids: [UInt16]) -> [UInt16: [UInt8]] { Dictionary(uniqueKeysWithValues: dids.map { ($0, [0xAA]) }) }
     let session = "56 02 10 03 00 00 00 00"
-    // Lost after 0x3001: five refused, the session asked for again, the fifth asked again, and the rest read.
+    // Lost after 0x3001: five refused, the session taken back, all five asked again, and the rest read.
     let once = module(dropping: [0x3001])
-    #expect(try await sweep(once, ids(8)).keys.sorted() == [0x3000, 0x3001, 0x3006, 0x3007])  // 3002-3005 refused
+    #expect(try await sweep(once, ids(8)) == aa(ids(8)))  // 0x3002 to 0x3005 too, from their second asking
     #expect(once.sent.filter { !$0.hasPrefix("AT") } == [readRequest(0x3000), session, readRequest(0x3000)]
-        + (0x3001...0x3006).map(readRequest) + [session, readRequest(0x3006), readRequest(0x3007)])
+        + (0x3001...0x3006).map(readRequest) + [session] + (0x3002...0x3006).map(readRequest) + [readRequest(0x3007)])
     // Lost again after 0x3007: the session is not asked for a third time, and the read ends with what it found.
     let twice = module(dropping: [0x3001, 0x3007])
-    let found: [UInt16: [UInt8]] = [0x3000: [0xAA], 0x3001: [0xAA], 0x3006: [0xAA], 0x3007: [0xAA]]
-    await #expect(throws: CodingError.sessionRefused(after: 13, found: found)) { _ = try await sweep(twice, ids(16)) }
+    await #expect(throws: CodingError.sessionRefused(after: 13, found: aa(ids(8)))) {
+        _ = try await sweep(twice, ids(16)) }
     #expect(twice.sent.filter { $0 == session }.count == 2)
+    // One of them refused again back in the session: the read ends there, with what it found.
+    let stuck = module(dropping: [0x3001], refusing: [0x3003])
+    await #expect(throws: CodingError.sessionRefused(after: 7, found: aa(ids(3)))) {
+        _ = try await sweep(stuck, ids(8)) }
+    #expect(stuck.sent.last == readRequest(0x3003))  // nothing asked after it
 }
 @Test func anAnswerOfAnyKindRestartsTheCountOfSilentIdentifiers() async throws {
     // Four silent, a positive, four silent, a negative, four silent: never five in a row.

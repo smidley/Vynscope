@@ -6,8 +6,8 @@ public enum CodingError: Error, Equatable {
     /// identifier; it is empty when the module never answered.
     case moduleStoppedAnswering(after: Int, found: [UInt16: [UInt8]] = [:])
     /// A module refused five identifiers in a row as not supported in the active session (`0x7F`) or under
-    /// conditions not correct (`0x22`), and `Coding.read` could not get them the extended session (see there).
-    /// `after` and `found` as for `moduleStoppedAnswering`.
+    /// conditions not correct (`0x22`), and `Coding.read` could not have them answered in the extended session (see
+    /// there). `after` and `found` as for `moduleStoppedAnswering`.
     case sessionRefused(after: Int, found: [UInt16: [UInt8]] = [:])
 }
 
@@ -24,15 +24,15 @@ public enum Coding {
     /// The first time `module` says that the service is not supported in the active session (`0x7F`) or that
     /// conditions are not correct (`0x22`), this asks it for the extended session. If it agrees, that identifier
     /// is asked again. From then on, five identifiers in a row refused with either code end the read, unless the
-    /// module agreed and this is the first time: then the session is asked for again and the fifth identifier
-    /// asked again, and the read goes on if that one is not refused. TesterPresent goes out ahead of any read
-    /// that comes more than two seconds after the last request to `module`, to hold the session; its answer is
-    /// ignored.
+    /// module agreed and this is the first time: then the session is asked for again and, if the module agrees,
+    /// every identifier refused since it was first asked for is asked again, in order; the read goes on if none of
+    /// them is refused again. TesterPresent goes out ahead of any read that comes more than two seconds after the
+    /// last request to `module`, to hold the session; its answer is ignored.
     ///
     /// Throws `CodingError.moduleStoppedAnswering`, carrying what was read so far, when five identifiers in a
-    /// row get no answer at all, `CodingError.sessionRefused`, likewise, when five in a row are refused and the
-    /// session is not had back, `CancellationError` between two identifiers once the task is cancelled, and lets
-    /// the `LinkError`s of `diag` through.
+    /// row get no answer at all, `CodingError.sessionRefused`, likewise, when refusals end the read as above,
+    /// `CancellationError` between two identifiers once the task is cancelled, and lets the `LinkError`s of `diag`
+    /// through.
     public static func read(
         diag: Diag, module: UInt8, dids: [UInt16], progress: @escaping (Int, Int) -> Void
     ) async throws -> [UInt16: [UInt8]] {
@@ -49,9 +49,8 @@ public enum Coding {
         var silent = 0  // identifiers in a row that got no answer at all
         let refusals: [UDSResult] = [.negative(0x7F), .negative(0x22)]
         var refused = 0  // identifiers in a row refused in the active session; a 0x31 (no such identifier) is none
+        var refusedDIDs: [UInt16] = []  // every identifier refused since the session was asked for, in order
         var sessionAsked = false
-        // ponytail: when the session is had back only the fifth refused identifier is asked again, so the four
-        // before it are skipped without a word. Ask the whole run again if the car drops the session.
         var mayReenter = false  // the module agreed to the session, which has not been asked for again yet
         var lastRequest = now()
         // One read, preceded by TesterPresent when the module has heard nothing for over two seconds.
@@ -62,26 +61,38 @@ public enum Coding {
             silent = result == .noResponse ? silent + 1 : 0
             return result
         }
+        // Asks for the extended session, a request that holds off TesterPresent like a read; true when it is granted.
+        func enterSession() async throws -> Bool {
+            lastRequest = now()
+            return try await diag.enterExtendedSession(module)
+        }
         for (index, did) in dids.enumerated() {
             try Task.checkCancellation()  // between two requests, so no answer is left unread
             var result = try await ask(did)
             if !sessionAsked, refusals.contains(result) {
                 sessionAsked = true
-                lastRequest = now()
-                mayReenter = try await diag.enterExtendedSession(module)
+                mayReenter = try await enterSession()
                 if mayReenter { result = try await ask(did) }
             }
-            refused = refusals.contains(result) ? refused + 1 : 0
-            if refused >= 5, mayReenter {  // the session is gone: ask for it again, this once
-                mayReenter = false
-                lastRequest = now()
-                if try await diag.enterExtendedSession(module) { result = try await ask(did) }
-                if !refusals.contains(result) { refused = 0 }
-            }
             if case .positive(let data) = result { found[did] = data }
+            if refusals.contains(result) { refusedDIDs.append(did) }
+            refused = refusals.contains(result) ? refused + 1 : 0
             progress(index + 1, dids.count)
             if silent >= 5 { throw CodingError.moduleStoppedAnswering(after: index + 1, found: found) }
-            if refused >= 5 { throw CodingError.sessionRefused(after: index + 1, found: found) }
+            if refused >= 5 {  // the session is gone: ask for it again this once, then ask again all that was refused
+                guard mayReenter, try await enterSession() else {
+                    throw CodingError.sessionRefused(after: index + 1, found: found)
+                }
+                mayReenter = false
+                for earlier in refusedDIDs {
+                    try Task.checkCancellation()  // between two requests, as above
+                    let answer = try await ask(earlier)
+                    if refusals.contains(answer) { throw CodingError.sessionRefused(after: index + 1, found: found) }
+                    if case .positive(let data) = answer { found[earlier] = data }
+                }
+                refusedDIDs = []
+                refused = 0
+            }
         }
         return found
     }
