@@ -22,6 +22,7 @@ The work ships in phases, each verified by Scott in the car before the next star
 - Writes to the head unit (`HU_MGU`), the body domain controller (`BDC_BODY3`) or the instrument cluster (`KOMBI`) on the i4. Their coding is signed per VIN by BMW's backend and the module rejects unsigned writes. The app reads them like any other module.
 - Parsing BMW's binary CAFD definition files. The app reads a plain option table Scott produces from them (format in phase 2). How he produces it is outside the app.
 - App Store distribution, CarPlay, Android, Windows.
+- AI features. They are a second product on this foundation, designed separately in `2026-10-26-ai-mechanic-design.md`; its stage 1 adds one read service (`0x19`, fault codes) and a standard-OBD mode to the allowed request list when it is built.
 
 ## Anti-goals
 
@@ -100,7 +101,7 @@ The same four steps in a window, sized like a phone screen or wider; no separate
 
 CoreBluetooth central. Discover by service `FFF0`, subscribe to `FFF1`, write to `FFF2`. The adapter speaks a line protocol: the app writes a command ending in carriage return; the adapter replies with lines and then a `>` prompt. One command is in flight at a time, enforced by a single actor that owns the peripheral; the actor exposes one call that sends a command and returns the response lines up to the prompt, with a timeout. Everything above the transport is written against that one call, which is also the seam the tests use: a fake that returns canned lines.
 
-Adapter setup after connect: reset, echo off, headers on, spaces off, CAN protocol 11-bit 500 kbit/s, CAN auto-formatting off (the app builds ISO-TP frames itself because BMW's target address sits in the first data byte), tester header `6F1`, and a flow-control frame of the form `XX 30 00 00` using the adapter's custom flow-control commands so multi-frame responses flow. Per module the app sets the receive filter to `6XX` for that module's address. The app reassembles multi-frame responses from raw frames. The exact command list and timings are verified in the car through the log; the reference for the approach is `tronikos/elm327_obdii` (Python), which drives the same `FFF1`/`FFF2` adapters and switches headers and filters per module. It is a reference, not a dependency.
+Adapter setup after connect: reset, echo off, headers on, spaces on (so the log and the parser see byte-separated frames), CAN protocol 11-bit 500 kbit/s, CAN auto-formatting off (the app builds ISO-TP frames itself because BMW's target address sits in the first data byte), tester header `6F1`, and a flow-control frame of the form `XX 30 00 00` using the adapter's custom flow-control commands so multi-frame responses flow. Per module the app sets the receive filter to `6XX` for that module's address. The app reassembles multi-frame responses from raw frames. The exact command list and timings are verified in the car through the log; the reference for the approach is `tronikos/elm327_obdii` (Python), which drives the same `FFF1`/`FFF2` adapters and switches headers and filters per module. It is a reference, not a dependency.
 
 ### Requests
 
@@ -163,11 +164,11 @@ Sketch only; mockups come when the phase starts, and this section is Scott's to 
 - The address table's source.
 - Probe and backup timing, batch size, flow-control details.
 - Project layout, concurrency details, test framework.
-- App name and icon. Default: "BMW Coding".
+- Icon. The app is named Vynscope (decided 2026-10-26); bundle id `com.smidley.vynscope`; the Core package keeps the name `BMWCodingCore`.
 
 ## What Scott verifies per phase
 
-Phase 1 in the car, both cars:
+Phase 1 in the car. The i4 first; the F-series car is not available during phase 1 (decided 2026-10-26), so its checks run when it is, without blocking the phase:
 
 - Adapter model and firmware match what OBDLink's app reports.
 - The VIN matches the door sticker.

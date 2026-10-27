@@ -2,3 +2,10 @@
 .DS_Store
 xcuserdata/
 *.xcuserstate
+build/
+Vynscope.xcodeproj/
+.swiftpm/
+*.xcuserdatad/
+Core/.build/
+App/Info.plist
+App/Vynscope.entitlements

@@ -926,7 +926,7 @@ From the survey, pick the identifier that carries the BMW part number and add it
 
 - [ ] **Step 4: Fill the module table**
 
-Add every address the i4 and the X3/X5 answered, with the names Scott confirms from BimmerCode's pages, to `ModuleTable`; extend `tableAndSignedList` with two of them.
+Add every address the i4 answered, with the names Scott confirms from BimmerCode's pages, to `ModuleTable`; extend `tableAndSignedList` with two of them. The F-series car is not available in this phase (Scott's decision, 2026-10-26); its addresses are added when it is.
 
 - [ ] **Step 5: Run everything**
 
@@ -942,12 +942,22 @@ git commit -m "Survey results: real SVK layout, part number, module table"
 
 ---
 
-### Task 16: Phase 1 verification on both cars
+### Task 16: Phase 1 verification on the i4
 
-- [ ] **Step 1: Walk the spec's phase 1 checklist on the i4 and on the X3/X5**
+- [ ] **Step 1: Walk the spec's phase 1 checklist on the i4**
 
-For each car: adapter model and firmware match OBDLink's own app; VIN matches the door sticker; the module list has every module named in the spec that the car has, the three signed ones badged on the i4 and none on the F-series; a backup file exists with every listed module `complete` and non-empty coding; the log for the whole run contains only adapter setup, `22`, `3E` and `10 03`.
+Adapter model and firmware match OBDLink's own app; VIN matches the door sticker; the module list has every module named in the spec that the car has, with the three signed ones badged; a backup file exists with every listed module `complete` and non-empty coding; the log for the whole run contains only adapter setup, `22`, `3E` and `10 03`. The F-series car is not available in this phase (Scott's decision, 2026-10-26); its verification happens when it is, and its year and model stay an open question that does not block phase 1.
 
 - [ ] **Step 2: Record the outcome**
 
-Add a short `Verified` section to the spec with the date, the car, the backup file name and anything that failed; commit. Phase 1 is done when both cars pass.
+Add a short `Verified` section to the spec with the date, the car, the backup file name and anything that failed; commit. Phase 1 is done when the i4 passes.
+
+**In-car watch list** (from the whole-branch review; each is a log check, none blocks the checklist above):
+- Lines of the form `XX 30 00 00 00 00 00 00` are ISO-TP flow control sent by the app, not writes; they are allowed in the "nothing else was sent" check.
+- Does the CX keep the BLE link across `ATZ`? If the link drops at setup, use `ATWS` instead.
+- Does `FFF2` accept write-with-response? If writes error, switch the link to write-without-response.
+- After the first sweep, `remembered-dids.json` keys must contain CAFD names; a key like `56|` means the SVK parse missed and a coding-file change would not drop the set.
+- Watch for runs of `7F 22 7F` or `7F 22 22` after `10 03` (session refused or lost), for `7F 22 78` twice in a row and for `7F 22 21` (identifiers the sweep may have skipped).
+- Watch for notes saying a read answered with a different identifier than asked: a late reply after a timeout was misattributed and the next identifier lost.
+- Compare the per-identifier cadence with the Log window open and closed; lock the iPhone once mid-sweep; the first Mac launch asks for Documents access; the pairing dialog must fit the 20 s connect budget.
+- Compare `STDI`/`STI` and the Device Information strings with OBDLink's app; check the first `ATZ` reply for an unsolicited banner shifting replies by one.
