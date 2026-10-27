@@ -7,3 +7,5 @@ BMWCoding.xcodeproj/
 .swiftpm/
 *.xcuserdatad/
 Core/.build/
+App/Info.plist
+App/BMWCoding.entitlements

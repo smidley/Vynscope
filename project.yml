@@ -1,0 +1,59 @@
+name: BMWCoding
+options:
+  bundleIdPrefix: com.smidley
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: 5CNQA36678            # Scott Brant
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_APP_SANDBOX: NO                  # as Dustpan
+packages:
+  BMWCodingCore:
+    path: Core
+targets:
+  BMWCoding:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    sources: [App]
+    dependencies:
+      - package: BMWCodingCore
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: BMW Coding
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSBluetoothAlwaysUsageDescription: Talks to the OBDLink CX adapter in the car.
+        UIBackgroundModes: [bluetooth-central]
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    entitlements:
+      path: App/BMWCoding.entitlements
+      properties:
+        com.apple.security.hardened-process: true
+        com.apple.security.hardened-process.enhanced-security-version-string: "2"
+        com.apple.security.hardened-process.hardened-heap: true
+        com.apple.security.hardened-process.dyld-ro: true
+        com.apple.security.hardened-process.platform-restrictions-string: "2"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.smidley.bmwcoding
+schemes:
+  BMWCoding:
+    build:
+      targets:
+        BMWCoding: all
+    run:
+      config: Debug
