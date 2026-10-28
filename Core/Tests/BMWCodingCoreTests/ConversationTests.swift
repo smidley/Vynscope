@@ -108,3 +108,52 @@ import Testing
     #expect(Sources.list(in: content) == [Sources.Source(url: "https://a", title: "First"), Sources.Source(url: "https://b", title: "https://b")])
     #expect(Sources.list(in: []).isEmpty)
 }
+@Test func consecutiveTextBlocksAreOneRun() {
+    func text(_ value: String) -> JSON { .object(["type": .string("text"), "text": .string(value)]) }
+    let cited: JSON = .object(["type": .string("text"), "text": .string("the nozzle is blocked"), "citations": .array([
+        .object(["type": .string("web_search_result_location"), "url": .string("https://a"), "title": .string("A"), "cited_text": .string("nozzle")])])])
+    #expect(Transcript.textRuns(in: [text("Based on the results, "), cited, text(".")])
+        == [Transcript.TextRun(text: "Based on the results, the nozzle is blocked.", lastBlockIndex: 2)])
+    let toolUse: JSON = .object(["type": .string("tool_use"), "id": .string("t"), "name": .string("get_vehicle"), "input": .object([:])])
+    #expect(Transcript.textRuns(in: [text("Let me look."), toolUse, text("Done.")])
+        == [Transcript.TextRun(text: "Let me look.", lastBlockIndex: 0), Transcript.TextRun(text: "Done.", lastBlockIndex: 2)])
+    #expect(Transcript.textRuns(in: []).isEmpty)
+}
+@Test func aTurnSavedBeforeErrorAndActivityStillLoads() throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let file = folder.appending(path: "Conversations/WBY73AW04RFFAKE19.json")
+    try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("""
+        {"carContext": "{}", "messages": [], "model": "claude-opus-5-5", "started": "2026-10-26T07:33:20Z",
+         "turns": [{"messageIndex": 0, "model": "claude-opus-5-5", "refused": false, "rounds": 0, "stopped": true,
+                    "stoppedAtRoundCap": false, "truncated": false,
+                    "usage": {"cacheCreationInputTokens": 0, "cacheReadInputTokens": 0, "inputTokens": 10,
+                              "outputTokens": 5, "webFetchRequests": 0, "webSearchRequests": 0}}],
+         "vin": "WBY73AW04RFFAKE19"}
+        """.utf8).write(to: file)
+    let store = ConversationStore(directory: folder)
+    var conversation = try #require(store.load(vin: "WBY73AW04RFFAKE19"))
+    let turn = try #require(conversation.turns.first)
+    #expect(turn.error == nil && turn.activity == [] && turn.stopped && turn.usage.inputTokens == 10)
+    conversation.turns[0].error = "API error (authentication_error): invalid x-api-key"
+    conversation.turns[0].activity = ["Read 1 fault code from BDC_BODY3", "Searched the web: \"801E2B\""]
+    try store.save(conversation)
+    #expect(store.load(vin: "WBY73AW04RFFAKE19") == conversation)
+}
+@Test func fetchedPagesAreAmongTheSources() {
+    func fetched(_ url: String, title: String?) -> JSON {
+        .object(["type": .string("web_fetch_tool_result"), "tool_use_id": .string("f"), "content": .object([
+            "type": .string("web_fetch_result"), "url": .string(url),
+            "content": .object(["type": .string("document"), "title": title.map(JSON.string) ?? .null])])])
+    }
+    func cited(_ url: String) -> JSON {
+        .object(["type": .string("text"), "text": .string("a"), "citations": .array([
+            .object(["type": .string("web_search_result_location"), "url": .string(url), "title": .string("Forum")])])])
+    }
+    #expect(Sources.list(in: [fetched("https://fetched", title: "Service note"), cited("https://searched")])
+        == [Sources.Source(url: "https://fetched", title: "Service note"), Sources.Source(url: "https://searched", title: "Forum")])
+    // A page without a title is listed under its URL, and once, however often it is fetched or cited.
+    #expect(Sources.list(in: [fetched("https://fetched", title: nil), cited("https://fetched")])
+        == [Sources.Source(url: "https://fetched", title: "https://fetched")])
+}

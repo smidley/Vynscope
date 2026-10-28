@@ -27,8 +27,9 @@ public struct Conversation: Codable, Equatable {
     public var totalUsage: Usage { turns.reduce(.zero) { $0 + $1.usage } }
 }
 
-/// How one owner message went, for the usage line under its answer. `usage`, `rounds`, `refused`, `truncated` and
-/// `stoppedAtRoundCap` are those of the `Turn` it ran.
+/// How one run of an owner message went, for the usage line under its answer. `usage`, `rounds`, `refused`,
+/// `truncated` and `stoppedAtRoundCap` are those of the `Turn` it ran; a turn that was stopped or failed has the usage
+/// of the requests it completed.
 public struct TurnRecord: Codable, Equatable {
     /// The index in `Conversation.messages` of the owner message that started the turn.
     public var messageIndex: Int
@@ -40,10 +41,14 @@ public struct TurnRecord: Codable, Equatable {
     /// The owner stopped the turn.
     public var stopped: Bool
     public var model: String
+    /// What went wrong, as the chat said it, when the turn failed; `nil` otherwise.
+    public var error: String?
+    /// The turn's reads and web lookups, a line each, as the chat showed them while it ran.
+    public var activity: [String]
 
     public init(
         messageIndex: Int, usage: Usage, rounds: Int, refused: Bool, truncated: Bool, stoppedAtRoundCap: Bool,
-        stopped: Bool, model: String
+        stopped: Bool, model: String, error: String? = nil, activity: [String] = []
     ) {
         self.messageIndex = messageIndex
         self.usage = usage
@@ -53,6 +58,23 @@ public struct TurnRecord: Codable, Equatable {
         self.stoppedAtRoundCap = stoppedAtRoundCap
         self.stopped = stopped
         self.model = model
+        self.error = error
+        self.activity = activity
+    }
+
+    /// Reads a record as `save` wrote it; one written before turns kept their `error` and `activity` has neither.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        messageIndex = try container.decode(Int.self, forKey: .messageIndex)
+        usage = try container.decode(Usage.self, forKey: .usage)
+        rounds = try container.decode(Int.self, forKey: .rounds)
+        refused = try container.decode(Bool.self, forKey: .refused)
+        truncated = try container.decode(Bool.self, forKey: .truncated)
+        stoppedAtRoundCap = try container.decode(Bool.self, forKey: .stoppedAtRoundCap)
+        stopped = try container.decode(Bool.self, forKey: .stopped)
+        model = try container.decode(String.self, forKey: .model)
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+        activity = try container.decodeIfPresent([String].self, forKey: .activity) ?? []
     }
 }
 
@@ -99,6 +121,33 @@ public struct ConversationStore {
     private func file(vin: String) -> URL { folder.appendingPathComponent("\(vin).json") }
 }
 
+/// The text of an assistant message as the chat shows it.
+public enum Transcript {
+    /// Text blocks that follow one another, read as one text.
+    public struct TextRun: Equatable, Sendable {
+        /// Their texts joined as they are, with nothing between them.
+        public var text: String
+        /// The index of the run's last block in the content, where the chat shows the run among the other blocks.
+        public var lastBlockIndex: Int
+    }
+
+    /// Every run of consecutive `text` blocks in `content`, each as long as it goes, in order. The API splits an
+    /// answer that cites its sources into several text blocks, one break at each citation, and they read as one.
+    public static func textRuns(in content: [JSON]) -> [TextRun] {
+        var runs: [TextRun] = []
+        for (index, block) in content.enumerated() where block["type"]?.string == "text" {
+            let text = block["text"]?.string ?? ""
+            if runs.last?.lastBlockIndex == index - 1 {
+                runs[runs.count - 1].text += text
+                runs[runs.count - 1].lastBlockIndex = index
+            } else {
+                runs.append(TextRun(text: text, lastBlockIndex: index))
+            }
+        }
+        return runs
+    }
+}
+
 /// The suggested questions that end an answer, which the chat shows as chips.
 public enum Chips {
     /// `text` split into its body and the questions of the block that ends it. The block is the line
@@ -123,23 +172,33 @@ public enum Chips {
     }
 }
 
-/// The web pages an answer cites, for the numbered list under it.
+/// The web pages an answer cites or fetched, for the numbered list under it.
 public enum Sources {
     public struct Source: Equatable, Sendable {
         public var url: String
         public var title: String
     }
 
-    /// The `web_search_result_location` citations of the `text` blocks of `content`, once for each URL, in the order
-    /// they first appear and with the title of the first. A citation without a title is listed under its URL, and one
-    /// without a URL is left out.
+    /// The `web_search_result_location` citations of the `text` blocks of `content` and the pages of its
+    /// `web_fetch_tool_result` blocks, once for each URL, in the order they first appear and with the title of the
+    /// first. A page without a title is listed under its URL, and a citation or a fetch without a URL is left out.
     public static func list(in content: [JSON]) -> [Source] {
         var sources: [Source] = []
-        for block in content where block["type"]?.string == "text" {
-            let citations = block["citations"]?.array ?? []
-            for citation in citations where citation["type"]?.string == "web_search_result_location" {
-                guard let url = citation["url"]?.string, !sources.contains(where: { $0.url == url }) else { continue }
-                sources.append(Source(url: url, title: citation["title"]?.string ?? url))
+        func add(_ url: String?, title: String?) {
+            guard let url, !sources.contains(where: { $0.url == url }) else { return }
+            sources.append(Source(url: url, title: title ?? url))
+        }
+        for block in content {
+            switch block["type"]?.string {
+            case "text":
+                let citations = block["citations"]?.array ?? []
+                for citation in citations where citation["type"]?.string == "web_search_result_location" {
+                    add(citation["url"]?.string, title: citation["title"]?.string)
+                }
+            case "web_fetch_tool_result":
+                add(block["content"]?["url"]?.string, title: block["content"]?["content"]?["title"]?.string)
+            default:
+                break
             }
         }
         return sources
