@@ -147,10 +147,12 @@ struct AISettingsView: View {
     private var chatGPTSection: some View {
         Section("ChatGPT") {
             if let account = ai.chatGPT {
+                // The email is empty when the ID token carried none.
+                let signedIn = account.email.isEmpty ? "Signed in" : "Signed in as \(account.email)"
                 if account.mayUsePlan {
-                    Text("Signed in as \(account.email)")
+                    Text(signedIn)
                 } else {
-                    Text("Signed in as \(account.email), but Vynscope may not use your ChatGPT plan")
+                    Text("\(signedIn), but Vynscope may not use your ChatGPT plan")
                     Text("Disconnect Vynscope in ChatGPT Settings, then sign in again and allow plan usage.")
                         .foregroundStyle(Color.vynMuted)
                 }
