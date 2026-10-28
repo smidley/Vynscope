@@ -28,14 +28,13 @@ public final class URLSessionTransport: Transport {
         let http = response as? HTTPURLResponse
         var fields: [String: String] = [:]
         for (name, value) in http?.allHeaderFields ?? [:] { fields["\(name)".lowercased()] = "\(value)" }
-        return TransportResponse(status: http?.statusCode ?? 0, headers: fields, lines: Self.lines(of: bytes))
+        return TransportResponse(status: http?.statusCode ?? 0, headers: fields, lines: Self.lines(bytes))
     }
 
     /// The lines of `bytes`, split at line feeds with a carriage return before one dropped. Unlike Foundation's
     /// `lines` this keeps blank lines, and a blank line is what ends each Server-Sent Event.
-    nonisolated static func lines(of bytes: some AsyncSequence<UInt8, any Error> & Sendable)
-        -> AsyncThrowingStream<String, any Error>
-    {
+    nonisolated static func lines<S: AsyncSequence & Sendable>(_ bytes: S) -> AsyncThrowingStream<String, any Error>
+    where S.Element == UInt8 {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -155,8 +154,8 @@ public final class ClaudeClient {
     /// Sends `request` and streams the answer, giving `onUpdate` each update. Three tries in all: a 429, 500 or
     /// 529, or an `error` event before any content block started, is tried again after 1 s and then 2 s (a 429's
     /// integer `retry-after` instead, at most 30 s). Any other status the API refuses with, an `error` event after
-    /// content, and a failure still there at the third try throw `ClaudeError.api`. A stream that ends without
-    /// `message_stop` gives the message as far as it got.
+    /// content, and a failure still there at the third try throw `ClaudeError.api`; a stream that ends before
+    /// `message_stop` throws `ClaudeError.network` and is not tried again.
     public func send(_ request: ClaudeRequest, onUpdate: (StreamUpdate) -> Void) async throws -> AssistantMessage {
         let body = Self.body(for: request).encoded()
         var tries = 0
@@ -169,14 +168,17 @@ public final class ClaudeClient {
             var delay = Duration.seconds(tries)
             let reason: String
             if (200..<300).contains(response.status) {
-                var parser = SSEParser(), assembler = StreamAssembler()
+                var parser = SSEParser(), assembler = StreamAssembler(), finished = false
                 do {
                     for try await line in response.lines {
                         guard let event = parser.feed(line), let update = try assembler.apply(event) else { continue }
                         onUpdate(update)
-                        if update == .finished { break }
+                        if update == .finished { finished = true; break }
                     }
                     try Task.checkCancellation()  // a cancel ends the stream early: that is a Stop, not an answer
+                    // A half-built message would put a tool call without its input, or thinking without its
+                    // signature, into the conversation.
+                    guard finished else { throw ClaudeError.network("the stream ended before message_stop") }
                     let message = assembler.message(), usage = message.usage
                     log.note(
                         "ai: \(message.stopReason ?? "none") · in \(usage.inputTokens) · cached "

@@ -77,21 +77,35 @@ func request() -> ClaudeRequest { ClaudeRequest(model: "m", effort: "medium", sy
         try await client.send(request()) { _ in }
     }
 }
-@Test func aCancelledSendThrowsCancellationInsteadOfAPartialAnswer() async throws {
-    let transport = FakeTransport([(200, [:], textStream("hi"))])
+@Test func aStreamThatEndsBeforeMessageStopThrows() async throws {
+    let cut = textStream("partial").components(separatedBy: "event: content_block_stop")[0]
+    let transport = FakeTransport([(200, [:], cut)])
+    let client = ClaudeClient(transport: transport, apiKey: "k", log: Log()) { _ in }
+    await #expect(throws: ClaudeError.network("the stream ended before message_stop")) {
+        try await client.send(request()) { _ in }
+    }
+    #expect(transport.calls.count == 1)
+}
+@Test func aCancelledSendThrowsCancellationNotAConnectionError() async throws {
+    let cut = textStream("partial").components(separatedBy: "event: content_block_stop")[0]
+    let transport = FakeTransport([(200, [:], cut)])
     let client = ClaudeClient(transport: transport, apiKey: "k", log: Log())
     let task = Task { try await client.send(request()) { _ in } }
     task.cancel()
     await #expect(throws: CancellationError.self) { try await task.value }
 }
 @Test func transportLinesKeepBlankLinesAndDropLineEndings() async throws {
-    let bytes = AsyncThrowingStream<UInt8, any Error> { c in
-        for byte in "event: ping\r\ndata: {}\n\n{\"type\":\"error\"}".utf8 { c.yield(byte) }
-        c.finish()
+    func lines(_ text: String) async throws -> [String] {
+        let bytes = AsyncStream<UInt8> { c in
+            for byte in Array(text.utf8) { c.yield(byte) }
+            c.finish()
+        }
+        var lines: [String] = []
+        for try await line in URLSessionTransport.lines(bytes) { lines.append(line) }
+        return lines
     }
-    var lines: [String] = []
-    for try await line in URLSessionTransport.lines(of: bytes) { lines.append(line) }
-    #expect(lines == ["event: ping", "data: {}", "", "{\"type\":\"error\"}"])
+    #expect(try await lines("event: a\ndata: 1\n\nevent: b\r\ndata: 2\r\n\r\n") == ["event: a", "data: 1", "", "event: b", "data: 2", ""])
+    #expect(try await lines(#"{"type":"error"}"#) == [#"{"type":"error"}"#])  // an error body has no final line feed
 }
 
 @Test func runsToolsAndEchoesContentVerbatim() async throws {
