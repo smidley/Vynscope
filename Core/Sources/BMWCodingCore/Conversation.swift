@@ -143,10 +143,11 @@ public struct ConversationStore {
     }
 
     /// Removes the conversation of the car with this VIN with `provider`: its file, and for Anthropic's the file of
-    /// before there were providers too. Their being missing is not an error.
+    /// before there were providers too, first, so that a removal that fails cannot bring the older one back. Their
+    /// being missing is not an error.
     public func delete(vin: String, provider: Provider) throws {
         var urls = [file(vin: vin, provider: provider)]
-        if provider == .anthropic { urls.append(legacyFile(vin: vin)) }
+        if provider == .anthropic { urls.insert(legacyFile(vin: vin), at: 0) }
         for url in urls where FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
