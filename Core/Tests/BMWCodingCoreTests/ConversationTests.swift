@@ -10,32 +10,32 @@ private func temporaryFolder() -> URL {
     let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }
     let store = ConversationStore(directory: folder)
-    #expect(store.load(vin: "WBY73AW04RFFAKE19") == nil)
+    #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) == nil)
     var conversation = Conversation(vin: "WBY73AW04RFFAKE19", started: Date(timeIntervalSince1970: 1_793_000_000), model: "claude-opus-5-5", carContext: "{}")
     conversation.messages = [.object(["role": .string("user"), "content": .array([.object(["type": .string("text"), "text": .string("hi")])])])]
     conversation.turns = [.init(messageIndex: 0, usage: Usage(inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, webSearchRequests: 1, webFetchRequests: 0), rounds: 1, refused: false, truncated: false, stoppedAtRoundCap: false, stopped: false, model: "claude-opus-5-5")]
     try store.save(conversation)
     #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Conversations/WBY73AW04RFFAKE19-anthropic.json").path))
-    #expect(store.load(vin: "WBY73AW04RFFAKE19") == conversation)
+    #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) == conversation)
     #expect(conversation.totalUsage.webSearchRequests == 1)
     try store.deleteAll()
-    #expect(store.load(vin: "WBY73AW04RFFAKE19") == nil)
+    #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) == nil)
     try store.deleteAll()
 }
 @Test func deleteRemovesOnlyThatCarsConversation() throws {
     let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }
     let store = ConversationStore(directory: folder)
-    try store.delete(vin: "WBY73AW04RFFAKE19")  // no folder yet: not an error
+    try store.delete(vin: "WBY73AW04RFFAKE19", provider: .anthropic)  // no folder yet: not an error
     let started = Date(timeIntervalSince1970: 1_793_000_000)
     let mine = Conversation(vin: "WBY73AW04RFFAKE19", started: started, model: "claude-opus-5-5", carContext: "{}")
     let other = Conversation(vin: "WBA00000000FAKE01", started: started, model: "claude-opus-5-5", carContext: "{}")
     try store.save(mine)
     try store.save(other)
-    try store.delete(vin: "WBY73AW04RFFAKE19")
-    #expect(store.load(vin: "WBY73AW04RFFAKE19") == nil)
-    #expect(store.load(vin: "WBA00000000FAKE01") == other)
-    try store.delete(vin: "WBY73AW04RFFAKE19")  // already gone: not an error
+    try store.delete(vin: "WBY73AW04RFFAKE19", provider: .anthropic)
+    #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) == nil)
+    #expect(store.load(vin: "WBA00000000FAKE01", provider: .anthropic) == other)
+    try store.delete(vin: "WBY73AW04RFFAKE19", provider: .anthropic)  // already gone: not an error
 }
 @Test func chipsComeOffTheEnd() {
     let text = "Two faults.\n\nSuggested questions:\n- Is the camera related?\n- What would a dealer charge?\n"
@@ -74,10 +74,10 @@ private func temporaryFolder() -> URL {
     let file = folder.appending(path: "Conversations/WBY73AW04RFFAKE19.json")
     try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
     try Data(#"{"vin": "WBY73AW04RFFAKE19"}"#.utf8).write(to: file)  // valid JSON, but not a conversation
-    #expect(store.load(vin: "WBY73AW04RFFAKE19") == nil)
+    #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) == nil)
     let conversation = Conversation(vin: "WBY73AW04RFFAKE19", started: Date(timeIntervalSince1970: 1_793_000_000), model: "claude-opus-5-5", carContext: "{}")
     try store.save(conversation)
-    #expect(store.load(vin: "WBY73AW04RFFAKE19") == conversation)
+    #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) == conversation)
 }
 @Test func theFileIsPrettyPrintedWithSortedKeysAndIsoDates() throws {
     let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
@@ -137,13 +137,13 @@ private func temporaryFolder() -> URL {
          "vin": "WBY73AW04RFFAKE19"}
         """.utf8).write(to: file)
     let store = ConversationStore(directory: folder)
-    var conversation = try #require(store.load(vin: "WBY73AW04RFFAKE19"))
+    var conversation = try #require(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic))
     let turn = try #require(conversation.turns.first)
     #expect(turn.error == nil && turn.activity == [] && turn.stopped && turn.usage.inputTokens == 10)
     conversation.turns[0].error = "API error (authentication_error): invalid x-api-key"
     conversation.turns[0].activity = ["Read 1 fault code from BDC_BODY3", "Searched the web: \"801E2B\""]
     try store.save(conversation)
-    #expect(store.load(vin: "WBY73AW04RFFAKE19") == conversation)
+    #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) == conversation)
 }
 @Test func fetchedPagesAreAmongTheSources() {
     func fetched(_ url: String, title: String?) -> JSON {

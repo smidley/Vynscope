@@ -118,7 +118,7 @@ public struct ConversationStore {
     /// The conversation of the car with this VIN with `provider`, or `nil` when there is no file or it cannot be
     /// decoded, in which case the next `save` replaces it. Anthropic's is read from the file of before there were
     /// providers when it has none of its own.
-    public func load(vin: String, provider: Provider = .anthropic) -> Conversation? {
+    public func load(vin: String, provider: Provider) -> Conversation? {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         var url = file(vin: vin, provider: provider)
@@ -144,7 +144,7 @@ public struct ConversationStore {
 
     /// Removes the conversation of the car with this VIN with `provider`: its file, and for Anthropic's the file of
     /// before there were providers too. Their being missing is not an error.
-    public func delete(vin: String, provider: Provider = .anthropic) throws {
+    public func delete(vin: String, provider: Provider) throws {
         var urls = [file(vin: vin, provider: provider)]
         if provider == .anthropic { urls.append(legacyFile(vin: vin)) }
         for url in urls where FileManager.default.fileExists(atPath: url.path) {
