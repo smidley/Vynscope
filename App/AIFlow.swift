@@ -116,7 +116,8 @@ final class AIFlow {
         self.flow = flow
         settings = .load()
         hasKey = Keychain.apiKey() != nil
-        session = ChatGPTSession(store: KeychainAccountStore(), transport: URLSessionHTTPTransport(), log: flow.log)
+        session = ChatGPTSession(
+            store: KeychainAccountStore(log: flow.log), transport: URLSessionHTTPTransport(), log: flow.log)
         chatGPT = session.account
     }
 

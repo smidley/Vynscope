@@ -68,10 +68,10 @@ enum Keychain {
 /// The ChatGPT sign-in as `ChatGPTSession` keeps it, in the Keychain: the account in `chatgpt-account`, the host and
 /// client ids in `chatgpt-registration`, each as JSON with ISO 8601 dates. They are read once, here; a record that
 /// cannot be decoded reads as none. Each change is written as it is made, and a write that fails keeps the value for
-/// this run only.
+/// this run only and is logged.
 final class KeychainAccountStore: ChatGPTAccountStore {
     var account: ChatGPTAccount? {
-        didSet { Self.write(account, to: Self.accountItem) }
+        didSet { write(account, to: Self.accountItem) }
     }
     var hostID: String? {
         didSet { writeRegistration() }
@@ -80,7 +80,10 @@ final class KeychainAccountStore: ChatGPTAccountStore {
         didSet { writeRegistration() }
     }
 
-    init() {
+    private let log: Log
+
+    init(log: Log) {
+        self.log = log
         account = Self.read(ChatGPTAccount.self, from: Self.accountItem)
         let registration = Self.read(Registration.self, from: Self.registrationItem)
         hostID = registration?.hostID
@@ -96,7 +99,7 @@ final class KeychainAccountStore: ChatGPTAccountStore {
     private static let registrationItem = "chatgpt-registration"
 
     private func writeRegistration() {
-        Self.write(Registration(hostID: hostID, clientID: clientID), to: Self.registrationItem)
+        write(Registration(hostID: hostID, clientID: clientID), to: Self.registrationItem)
     }
 
     private static func read<Value: Decodable>(_ type: Value.Type, from item: String) -> Value? {
@@ -105,15 +108,20 @@ final class KeychainAccountStore: ChatGPTAccountStore {
         return Keychain.data(for: item).flatMap { try? decoder.decode(type, from: $0) }
     }
 
-    /// Saves `value` as JSON under `item`, or removes the item when `value` is nil.
-    private static func write<Value: Encodable>(_ value: Value?, to item: String) {
-        guard let value else {
-            try? Keychain.delete(item)
-            return
+    /// Saves `value` as JSON under `item`, or removes the item when `value` is nil. A failure is logged as
+    /// `keychain <item>: <what the system says its status means>`, never with the value.
+    private func write<Value: Encodable>(_ value: Value?, to item: String) {
+        do {
+            guard let value else {
+                try Keychain.delete(item)
+                return
+            }
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            guard let data = try? encoder.encode(value) else { return }  // cannot fail: strings, numbers and dates
+            try Keychain.set(data, for: item)
+        } catch {
+            log.note("keychain \(item): \(error)")  // a KeychainError, which holds only its status
         }
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(value) else { return }  // cannot fail: strings, numbers and dates
-        try? Keychain.set(data, for: item)
     }
 }
