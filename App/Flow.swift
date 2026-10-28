@@ -7,7 +7,7 @@ import UIKit
 
 /// The steps of the flow, in order.
 enum Step: Int, CaseIterable {
-    case connect, car, modules, backup
+    case connect, car, modules, backup, ai
 
     var title: LocalizedStringResource {
         switch self {
@@ -15,7 +15,13 @@ enum Step: Int, CaseIterable {
         case .car: "Car"
         case .modules: "Modules"
         case .backup: "Backup"
+        case .ai: "AI Mechanic"
         }
+    }
+
+    /// The step in the step indicator: its number and title, `✦ AI` for the mechanic.
+    var indicatorLabel: String {
+        self == .ai ? "✦ AI" : "\(rawValue + 1) \(String(localized: title))"
     }
 }
 
@@ -72,7 +78,8 @@ final class Flow {
         case .connect: adapter != nil
         case .car: vin != nil
         case .modules: !discovering && !modules.isEmpty
-        case .backup: lastBackup != nil
+        case .backup: vin != nil
+        case .ai: true
         }
     }
 
