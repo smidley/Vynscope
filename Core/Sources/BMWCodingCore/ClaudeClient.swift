@@ -1,6 +1,7 @@
 import Foundation
 
-/// The seam to the Messages endpoint: one POST, answered with the status, the headers and the body's lines.
+/// The seam to a model's streaming endpoint, Messages or Responses: one POST, answered with the status, the headers and
+/// the body's lines.
 public protocol Transport: AnyObject {
     func post(body: Data, headers: [String: String]) async throws -> TransportResponse
 }
@@ -14,12 +15,14 @@ public struct TransportResponse {
     public var lines: AsyncThrowingStream<String, any Error>
 }
 
-/// `POST https://api.anthropic.com/v1/messages` with `URLSession`.
+/// `POST` to `url` with `URLSession`; `url` is the Messages endpoint unless told another.
 public final class URLSessionTransport: Transport {
-    public init() {}
+    private let url: URL
+
+    public init(url: URL = URL(string: "https://api.anthropic.com/v1/messages")!) { self.url = url }
 
     public func post(body: Data, headers: [String: String]) async throws -> TransportResponse {
-        var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = body
         request.allHTTPHeaderFields = headers
@@ -113,6 +116,8 @@ public struct Turn: Equatable, Sendable {
     /// The round cap was reached: after tool rounds the model was asked to answer without tools; after pauses the
     /// paused answer was dropped.
     public var stoppedAtRoundCap: Bool
+    /// The model would not take web search, so the turn asked again without it.
+    public var webSearchDropped = false
 }
 
 /// Talks to the Messages API: one streamed request at a time, with retries, and the mechanic's tool loop over
