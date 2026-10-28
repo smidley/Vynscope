@@ -119,7 +119,8 @@ public struct SSEParser {
 public enum StreamUpdate: Equatable, Sendable {
     /// The next piece of the answer's text.
     case text(String)
-    /// A content block that is complete, as it will be sent back: a tool call, with its input, is one.
+    /// A content block that is complete, as it will be sent back: a tool call, with its input, is one. A tool call
+    /// whose input is unreadable comes with `input` `{}`, and `message_stop` reports it.
     case block(JSON)
     /// The message is complete.
     case finished
@@ -147,7 +148,8 @@ public struct StreamAssembler {
     /// later API version may add some) and a delta or stop for a block that never started among them. Throws
     /// `ClaudeError.api(status: nil, ...)` for an `error` event. A tool call whose input is not a JSON object when
     /// its block stops gets `{}` instead; `message_stop` then throws `ClaudeError.badToolInput` with the first such
-    /// text, unless the message stopped for `max_tokens`, which cut that input off.
+    /// text, unless the message stopped at a limit (`max_tokens`, `model_context_window_exceeded`), which cut that
+    /// input off.
     public mutating func apply(_ event: SSEEvent) throws -> StreamUpdate? {
         // ponytail: data that is not JSON reads as nothing, so a corrupt event is skipped without a word. Throw
         // instead if a stream is ever seen arriving garbled.
@@ -204,7 +206,9 @@ public struct StreamAssembler {
             if let details = body["delta"]?["stop_details"], details != .null { stopDetails = details }
             usage.update(from: body["usage"])
         case "message_stop":
-            if let text = badInput, stopReason != "max_tokens" { throw ClaudeError.badToolInput(text) }
+            if let text = badInput, !["max_tokens", "model_context_window_exceeded"].contains(stopReason) {
+                throw ClaudeError.badToolInput(text)
+            }
             return .finished
         case "error":
             let error = body["error"]

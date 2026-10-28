@@ -65,26 +65,31 @@ func request() -> ClaudeRequest { ClaudeRequest(model: "m", effort: "medium", sy
         try await client.send(request()) { _ in }
     }
     #expect(transport.calls.count == 1)
+    #expect(log.entries.contains { $0.text == "ai: error 401 authentication_error: invalid x-api-key" })
     #expect(!log.entries.contains { $0.text.contains("sk-ant-secret") })
 }
 @Test func errorEventBeforeContentIsRetriedAfterContentIsThrown() async throws {
     let early = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"
     let late = textStream("partial").replacingOccurrences(of: "event: message_delta", with: early + "event: message_delta")
     let transport = FakeTransport([(200, [:], early), (200, [:], textStream("fine")), (200, [:], late)])
-    let client = ClaudeClient(transport: transport, apiKey: "k", log: Log()) { _ in }
+    let log = Log()
+    let client = ClaudeClient(transport: transport, apiKey: "k", log: log) { _ in }
     #expect(try await client.send(request()) { _ in }.content.first?["text"]?.string == "fine")
     await #expect(throws: ClaudeError.api(status: nil, type: "overloaded_error", message: "Overloaded")) {
         try await client.send(request()) { _ in }
     }
+    #expect(log.entries.last?.text == "ai: error - overloaded_error: Overloaded")
 }
 @Test func aStreamThatEndsBeforeMessageStopThrows() async throws {
     let cut = textStream("partial").components(separatedBy: "event: content_block_stop")[0]
     let transport = FakeTransport([(200, [:], cut)])
-    let client = ClaudeClient(transport: transport, apiKey: "k", log: Log()) { _ in }
+    let log = Log()
+    let client = ClaudeClient(transport: transport, apiKey: "k", log: log) { _ in }
     await #expect(throws: ClaudeError.network("the stream ended before message_stop")) {
         try await client.send(request()) { _ in }
     }
     #expect(transport.calls.count == 1)
+    #expect(log.entries.last?.text == "ai: network error: the stream ended before message_stop")
 }
 @Test func aCancelledSendThrowsCancellationNotAConnectionError() async throws {
     let cut = textStream("partial").components(separatedBy: "event: content_block_stop")[0]
@@ -145,10 +150,11 @@ func request() -> ClaudeRequest { ClaudeRequest(model: "m", effort: "medium", sy
     #expect(ran == 12 && turn.rounds == 13 && turn.stoppedAtRoundCap)
     let last = try #require(transport.calls.last)
     #expect(last.body["tool_choice"] == .object(["type": .string("none")]))
-    #expect(messages[messages.count - 2]["content"]?.array?.first?["content"]?.string == "Tool limit for this message reached; answer with what you already have")
+    #expect(ClaudeClient.roundCapResult == "Tool limit for this message reached; answer with what you already have")
+    #expect(messages[messages.count - 2]["content"]?.array?.first?["content"]?.string == ClaudeClient.roundCapResult)
     #expect(messages.last?["content"]?.array?.first?["text"]?.string == "Here is what I have.")
 }
-@Test func refusalRunsNoToolAndKeepsOnlyText() async throws {
+@Test func refusalRunsNoToolAndDropsItsCall() async throws {
     let transport = FakeTransport([(200, [:], refusalStream(text: "I cannot"))])
     var messages: [JSON] = [userText("q")]
     var ran = false
@@ -241,11 +247,12 @@ func request() -> ClaudeRequest { ClaudeRequest(model: "m", effort: "medium", sy
     #expect(calls == [ToolCall(id: "b", name: "read_faults", input: .object([:]))])
     #expect(messages[2]["content"]?.array?.compactMap { $0["tool_use_id"]?.string } == ["b"])
 }
-@Test func aToolCallCutOffByMaxTokensTruncatesTheTurn() async throws {
-    // A text block, then a tool call whose input max_tokens cut off.
+@Test(arguments: ["max_tokens", "model_context_window_exceeded"])
+func aToolCallCutOffAtTheLimitTruncatesTheTurn(stop: String) async throws {
+    // A text block, then a tool call whose input the limit cut off.
     let stream = refusalStream(text: "Reading module 40")
         .replacingOccurrences(of: #""partial_json":"{}""#, with: #""partial_json":"{\"module\": \"4""#)
-        .replacingOccurrences(of: #""stop_reason":"refusal""#, with: #""stop_reason":"max_tokens""#)
+        .replacingOccurrences(of: #""stop_reason":"refusal""#, with: #""stop_reason":"\#(stop)""#)
     let transport = FakeTransport([(200, [:], stream)])
     var messages: [JSON] = [userText("q")]
     var ran = false
@@ -256,7 +263,7 @@ func request() -> ClaudeRequest { ClaudeRequest(model: "m", effort: "medium", sy
     #expect(messages == [userText("q"), .object(["role": .string("assistant"), "content": .array([
         .object(["type": .string("text"), "text": .string("Reading module 40")])])])])
 }
-@Test func maxTokensKeepsOnlyTheTextOfTheAnswer() async throws {
+@Test func maxTokensDropsAThinkingBlockCutOffBeforeItsSignature() async throws {
     // A thinking block cut off before its signature, after the text.
     let thinking = """
         event: content_block_start
@@ -297,4 +304,78 @@ func request() -> ClaudeRequest { ClaudeRequest(model: "m", effort: "medium", sy
         runTool: { _ in ToolResult("") }, onUpdate: { _ in })
     #expect(transport.calls.count == 13 && turn.rounds == 13 && turn.stoppedAtRoundCap)
     #expect(messages == [userText("q")])
+}
+@Test func everyCompletedRequestReportsItsUsage() async throws {
+    let transport = FakeTransport([
+        (200, [:], toolUseStream(id: "t", name: "get_vehicle", input: "{}", output: 50)),
+        (200, [:], textStream("Done.", input: 900, cached: 800, output: 20))])
+    var messages: [JSON] = [userText("q")]
+    var usages: [Usage] = []
+    let turn = try await ClaudeClient(transport: transport, apiKey: "k", log: Log()).run(
+        messages: &messages, system: [], tools: [], model: "m", effort: "medium",
+        runTool: { _ in ToolResult("{}") }, onUpdate: { _ in }, onUsage: { usages.append($0) })
+    try #require(usages.count == 2)
+    #expect(usages.map { [$0.inputTokens, $0.outputTokens, $0.cacheReadInputTokens] } == [[100, 50, 0], [900, 20, 800]])
+    #expect(turn.usage == usages[0] + usages[1])
+    // The second request fails: the first one's usage was reported, and only it.
+    let failing = FakeTransport([
+        (200, [:], toolUseStream(id: "t", name: "get_vehicle", input: "{}", output: 50)),
+        (401, [:], "{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}")])
+    messages = [userText("q")]
+    var reported: [Usage] = []
+    await #expect(throws: ClaudeError.self) {
+        try await ClaudeClient(transport: failing, apiKey: "k", log: Log()).run(
+            messages: &messages, system: [], tools: [], model: "m", effort: "medium",
+            runTool: { _ in ToolResult("{}") }, onUpdate: { _ in }, onUsage: { reported.append($0) })
+    }
+    #expect(reported.map(\.outputTokens) == [50])
+}
+@Test func aCutAnswerKeepsTheWebLookupsItsCitationsPointTo() async throws {
+    // A web search and its result, the text that cites it, then a tool call max_tokens cut off.
+    let stream = """
+        event: message_start
+        data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"stop_reason":null,"usage":{"input_tokens":100,"output_tokens":1}}}
+
+        event: content_block_start
+        data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srv","name":"web_search","input":{}}}
+
+        event: content_block_stop
+        data: {"type":"content_block_stop","index":0}
+
+        event: content_block_start
+        data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srv","content":[]}}
+
+        event: content_block_stop
+        data: {"type":"content_block_stop","index":1}
+
+        event: content_block_start
+        data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":"The nozzle is blocked"}}
+
+        event: content_block_stop
+        data: {"type":"content_block_stop","index":2}
+
+        event: content_block_start
+        data: {"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"t","name":"get_vehicle","input":{}}}
+
+        event: content_block_stop
+        data: {"type":"content_block_stop","index":3}
+
+        event: message_delta
+        data: {"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null},"usage":{"output_tokens":16000}}
+
+        event: message_stop
+        data: {"type":"message_stop"}
+
+        """
+    let transport = FakeTransport([(200, [:], stream)])
+    var messages: [JSON] = [userText("q")]
+    var ran = false
+    let turn = try await ClaudeClient(transport: transport, apiKey: "k", log: Log()).run(
+        messages: &messages, system: [], tools: [], model: "m", effort: "medium",
+        runTool: { _ in ran = true; return ToolResult("") }, onUpdate: { _ in })
+    #expect(!ran && turn.truncated)
+    #expect(messages.count == 2 && messages[1]["content"]?.array == [
+        .object(["type": .string("server_tool_use"), "id": .string("srv"), "name": .string("web_search"), "input": .object([:])]),
+        .object(["type": .string("web_search_tool_result"), "tool_use_id": .string("srv"), "content": .array([])]),
+        .object(["type": .string("text"), "text": .string("The nozzle is blocked")])])
 }

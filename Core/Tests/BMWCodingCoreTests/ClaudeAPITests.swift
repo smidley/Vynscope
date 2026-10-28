@@ -155,7 +155,8 @@ func assemble(_ text: String) throws -> (AssistantMessage, [StreamUpdate]) {
     """
     #expect(throws: ClaudeError.badToolInput("{\"module\": ")) { try assemble(bad) }
 }
-@Test func aToolInputCutOffByMaxTokensReadsAsEmpty() throws {
+@Test(arguments: ["max_tokens", "model_context_window_exceeded"])
+func aToolInputCutOffAtTheLimitReadsAsEmpty(stop: String) throws {
     let cut = """
     event: content_block_start
     data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_value","input":{}}}
@@ -167,14 +168,14 @@ func assemble(_ text: String) throws -> (AssistantMessage, [StreamUpdate]) {
     data: {"type":"content_block_stop","index":0}
 
     event: message_delta
-    data: {"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null},"usage":{"output_tokens":16000}}
+    data: {"type":"message_delta","delta":{"stop_reason":"\(stop)","stop_sequence":null},"usage":{"output_tokens":16000}}
 
     event: message_stop
     data: {"type":"message_stop"}
 
     """
     let (message, updates) = try assemble(cut)
-    #expect(message.stopReason == "max_tokens" && message.content[0]["input"] == .object([:]))
+    #expect(message.stopReason == stop && message.content[0]["input"] == .object([:]))
     #expect(updates.last == .finished)
 }
 @Test func eventsForABlockThatNeverStartedAreIgnored() throws {

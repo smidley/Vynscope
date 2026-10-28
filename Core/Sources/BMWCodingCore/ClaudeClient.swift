@@ -107,7 +107,8 @@ public struct Turn: Equatable, Sendable {
     public var rounds: Int
     /// The model declined; what it said is kept as text.
     public var refused: Bool
-    /// `max_tokens` cut the answer off; only its text was kept, and none of its tool calls ran.
+    /// A limit (`max_tokens`, `model_context_window_exceeded`) cut the answer off; only its text and its answered web
+    /// lookups were kept, and none of its tool calls ran.
     public var truncated: Bool
     /// The round cap was reached: after tool rounds the model was asked to answer without tools; after pauses the
     /// paused answer was dropped.
@@ -119,6 +120,8 @@ public struct Turn: Equatable, Sendable {
 public final class ClaudeClient {
     /// Tool rounds and pauses per owner message.
     public static let roundCap = 12
+    /// What each tool call past the round cap gets as its result instead of running.
+    public static let roundCapResult = "Tool limit for this message reached; answer with what you already have"
 
     private let transport: any Transport
     private let headers: [String: String]
@@ -162,8 +165,25 @@ public final class ClaudeClient {
     /// 529, or an `error` event before any content block started, is tried again after 1 s and then 2 s (a 429's
     /// integer `retry-after` instead, at most 30 s). Any other status the API refuses with, an `error` event after
     /// content, and a failure still there at the third try throw `ClaudeError.api`; a stream that ends before
-    /// `message_stop` throws `ClaudeError.network` and is not tried again.
+    /// `message_stop` throws `ClaudeError.network` and is not tried again. Either error is logged as it is thrown.
     public func send(_ request: ClaudeRequest, onUpdate: (StreamUpdate) -> Void) async throws -> AssistantMessage {
+        do {
+            return try await sendWithRetries(request, onUpdate: onUpdate)
+        } catch let error as ClaudeError {
+            switch error {
+            case .api(let status, let type, let message):
+                log.note("ai: error \(status.map(String.init) ?? "-") \(type): \(message)")
+            case .network(let message): log.note("ai: network error: \(message)")
+            case .badToolInput: break
+            }
+            throw error
+        }
+    }
+
+    /// `send` without the note of the error it throws: the tries and the waits between them.
+    private func sendWithRetries(
+        _ request: ClaudeRequest, onUpdate: (StreamUpdate) -> Void
+    ) async throws -> AssistantMessage {
         let body = Self.body(for: request).encoded()
         var tries = 0
         while true {
@@ -210,11 +230,13 @@ public final class ClaudeClient {
 
     /// Runs one owner message, which `messages` already ends with, to its answer: sends, runs the tools the model
     /// calls through `runTool` and sends their results, and resends a `pause_turn` as it stands, for up to
-    /// `roundCap` rounds. `messages` takes every message of the turn only when it returns: when `send` or
-    /// `runTool` throws, it is left as it was, so it never holds a tool call without its result.
+    /// `roundCap` rounds. `onUsage` is told the usage of each request as it completes, so a turn that throws later
+    /// has still reported what it used. `messages` takes every message of the turn only when it returns: when `send`
+    /// or `runTool` throws, it is left as it was, so it never holds a tool call without its result.
     public func run(
         messages: inout [JSON], system: [JSON], tools: [JSON], model: String, effort: String,
-        runTool: (ToolCall) async throws -> ToolResult, onUpdate: (StreamUpdate) -> Void
+        runTool: (ToolCall) async throws -> ToolResult, onUpdate: (StreamUpdate) -> Void,
+        onUsage: (Usage) -> Void = { _ in }
     ) async throws -> Turn {
         var conversation = messages
         var turn = Turn(usage: .zero, rounds: 0, refused: false, truncated: false, stoppedAtRoundCap: false)
@@ -224,19 +246,22 @@ public final class ClaudeClient {
                 model: model, effort: effort, system: system, tools: tools, messages: conversation,
                 toolChoiceNone: toolChoiceNone)
             let message = try await send(request, onUpdate: onUpdate)
+            onUsage(message.usage)
             turn.usage = turn.usage + message.usage
             let followUp = request.messages.contains { $0["role"]?.string == "assistant" }
             if followUp, message.usage.cacheReadInputTokens == 0 { log.note("ai: no cache read on this request") }
             // The rest works from the content as it is sent back, so a call abandoned at a fallback never runs.
             let content = Self.echo(message.content)
-            // A refusal, or an answer max_tokens cut off, goes back as its text alone and none of its calls runs: a
-            // half-made tool call or thinking block must never be sent back.
-            let cut = message.stopReason == "refusal" || message.stopReason == "max_tokens"
-            let answer = cut ? content.filter { $0["type"]?.string == "text" } : content
+            // A refusal, or an answer a limit cut off, goes back as its text and the answered web lookups its
+            // citations point to, and none of its calls runs: a half-made tool call or thinking block must never be
+            // sent back.
+            let truncated = ["max_tokens", "model_context_window_exceeded"].contains(message.stopReason)
+            let cut = truncated || message.stopReason == "refusal"
+            let answer = cut ? Self.textAndAnsweredLookups(content[...], in: content) : content
             if !answer.isEmpty { conversation.append(Self.message("assistant", answer)) }
             if cut || toolChoiceNone {
                 turn.refused = message.stopReason == "refusal"
-                turn.truncated = message.stopReason == "max_tokens"
+                turn.truncated = truncated
                 turn.stoppedAtRoundCap = toolChoiceNone
                 break
             }
@@ -246,8 +271,7 @@ public final class ClaudeClient {
                 let calls = content.filter { $0["type"]?.string == "tool_use" }
                 var results: [JSON] = []
                 if turn.rounds > Self.roundCap {
-                    let limit = ToolResult(
-                        "Tool limit for this message reached; answer with what you already have", isError: true)
+                    let limit = ToolResult(Self.roundCapResult, isError: true)
                     results = calls.map { Self.resultBlock(limit, for: $0) }
                     toolChoiceNone = true
                 } else {
@@ -287,18 +311,23 @@ public final class ClaudeClient {
     /// are kept; the first model's thinking, its own tool calls and anything else are dropped.
     public static func echo(_ content: [JSON]) -> [JSON] {
         guard let fallback = content.lastIndex(where: { $0["type"]?.string == "fallback" }) else { return content }
+        return textAndAnsweredLookups(content[..<fallback], in: content) + content[fallback...]
+    }
+
+    /// The text of `blocks`, and its server tool calls (web search, web fetch) that a `*_tool_result` in `content`
+    /// answers, with those results; thinking, client tool calls, a server tool call without its result and anything
+    /// else are dropped.
+    private static func textAndAnsweredLookups(_ blocks: ArraySlice<JSON>, in content: [JSON]) -> [JSON] {
         let isResult = { (block: JSON) in block["type"]?.string?.hasSuffix("_tool_result") == true }
         let answered = Set(content.filter(isResult).compactMap { $0["tool_use_id"]?.string })
-        let asked = Set(
-            content[..<fallback].compactMap { $0["type"]?.string == "server_tool_use" ? $0["id"]?.string : nil })
-        let kept = content[..<fallback].filter { block in
+        let asked = Set(blocks.compactMap { $0["type"]?.string == "server_tool_use" ? $0["id"]?.string : nil })
+        return blocks.filter { block in
             switch block["type"]?.string {
             case "text": true
             case "server_tool_use": block["id"]?.string.map(answered.contains) ?? false
             default: isResult(block) && (block["tool_use_id"]?.string.map(asked.contains) ?? false)
             }
         }
-        return kept + content[fallback...]
     }
 
     private static func message(_ role: String, _ content: [JSON]) -> JSON {
