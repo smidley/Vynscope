@@ -48,9 +48,10 @@ struct AISettings: Codable, Equatable {
     }
 }
 
-/// The state of the AI step: the health check, the conversation about the connected car, the turn in progress, and
-/// the settings. It reaches the car through `flow`, holding `flow.busy` whenever it uses the adapter. The health check
-/// and the turns share one `Diag` and never overlap: each holds `busy`, and `phase` says which one runs.
+/// The state of the AI step: the health check, the conversation about the connected car, the turn in progress, the
+/// settings, and the sign-in to ChatGPT. It reaches the car through `flow`, holding `flow.busy` whenever it uses the
+/// adapter. The health check and the turns share one `Diag` and never overlap: each holds `busy`, and `phase` says
+/// which one runs.
 @Observable @MainActor
 final class AIFlow {
     enum Phase: Equatable {
@@ -73,23 +74,48 @@ final class AIFlow {
     var error: String?
     var settings: AISettings
     private(set) var hasKey: Bool
+    /// The ChatGPT sign-in, as kept in the Keychain.
+    private(set) var chatGPT: ChatGPTAccount?
+    /// A sign-in waits for the browser or completes.
+    private(set) var signingIn = false
+    /// The sign-in page, which the iPhone shows in a Safari sheet while this is set.
+    var signInURL: URL?
+    /// The models the ChatGPT account lists: the id the API takes, then the name shown.
+    private(set) var openAIModels: [(id: String, name: String)] = []
+    /// The welcome to plan usage, shown once after the first sign-in that allows it.
+    var showWelcome = false
     private unowned let flow: Flow
+    private let session: ChatGPTSession
     /// The health check or the turn in progress, which Stop cancels.
     @ObservationIgnored private var turnTask: Task<Void, Never>?
+    /// The wait for the sign-in's redirect, which Cancel and the Safari sheet's dismissal end.
+    @ObservationIgnored private var signInTask: Task<URL, any Error>?
+    private static let welcomeShownKey = "chatgptWelcomeShown"
 
     init(flow: Flow) {
         self.flow = flow
         settings = .load()
         hasKey = Keychain.apiKey() != nil
+        session = ChatGPTSession(store: KeychainAccountStore(), transport: URLSessionHTTPTransport(), log: flow.log)
+        chatGPT = session.account
     }
 
-    /// Opens the conversation saved for the connected car or, when there is none and a key is saved, runs the health
-    /// check. Does nothing without a connected car whose VIN was read, or while a check or a turn runs.
+    /// Whether the picked provider can answer: an API key is saved, or a ChatGPT sign-in may use the plan.
+    var hasCredentials: Bool {
+        switch settings.provider {
+        case .anthropic: hasKey
+        case .openai: chatGPT?.mayUsePlan == true
+        }
+    }
+
+    /// Opens the conversation saved for the connected car or, when there is none and the provider's credentials are
+    /// in, runs the health check. Does nothing without a connected car whose VIN was read, or while a check or a turn
+    /// runs.
     func enter() async {
         guard flow.diag != nil, let vin = flow.vin, phase == .idle || phase == .ready else { return }
         if conversation?.vin != vin { conversation = store.load(vin: vin) }
         phase = conversation == nil ? .idle : .ready
-        if conversation == nil, hasKey { await healthCheck() }
+        if conversation == nil, hasCredentials { await healthCheck() }
     }
 
     /// Reads every module's fault codes and standard OBD-II, starts a conversation from what it found, and has the
@@ -186,6 +212,127 @@ final class AIFlow {
 
     func saveSettings() {
         settings.save()
+    }
+
+    /// Saves the provider just picked.
+    func switchProvider() async {
+        saveSettings()
+    }
+
+    /// Signs in with ChatGPT: starts the listener for the redirect, then opens OpenAI's sign-in page, in the default
+    /// browser on the Mac or in the Safari sheet on the iPhone, and waits for the redirect, which `cancelSignIn()`
+    /// ends. Then completes the sign-in, loads the model list and, the first time, shows the welcome. The sign-in
+    /// page's URL is never logged.
+    func signInToChatGPT() async {
+        guard !signingIn else { return }
+        signingIn = true
+        error = nil
+        let listener = LoopbackListener()
+        defer {
+            listener.stop()
+            signInTask = nil
+            signInURL = nil
+            signingIn = false
+        }
+        let redirect: URL
+        do {
+            redirect = try await listener.start()
+        } catch {
+            self.error = "Could not start the sign-in: \(error.localizedDescription)"
+            return
+        }
+        let (url, attempt) = session.begin(redirect: redirect)
+        let wait = Task { try await listener.callback() }
+        signInTask = wait
+        #if os(macOS)
+        ChatGPTBrowser.open(url)
+        #else
+        signInURL = url
+        #endif
+        do {
+            let callback = try await wait.value
+            // The redirect is in: the Safari sheet goes, and its dismissal or Cancel no longer ends anything.
+            signInTask = nil
+            signInURL = nil
+            #if os(macOS)
+            ChatGPTBrowser.returnToApp()
+            #endif
+            chatGPT = try await session.complete(callback: callback, attempt: attempt, redirect: redirect)
+            error = nil
+            await loadOpenAIModels()
+            if !UserDefaults.standard.bool(forKey: Self.welcomeShownKey) {
+                showWelcome = true
+                UserDefaults.standard.set(true, forKey: Self.welcomeShownKey)
+            }
+        } catch is CancellationError {
+            // Cancel, or the sheet dismissed: nothing to say.
+        } catch let failure as SignInError {
+            switch failure {
+            case .denied: error = "Sign-in was cancelled in the browser"
+            case .planNotGranted: chatGPT = session.account  // kept, without plan usage, as the row then says
+            case .differentAccount: error = "That is a different ChatGPT account. Sign out first."
+            case .stateMismatch, .clientMismatch, .registrationIncomplete, .missingCode, .signedOut:
+                error = "The sign-in did not complete; try again"
+            case .tokenEndpoint(_, let code, let description):
+                error = "Sign-in failed (\(code)): \(description ?? code)"
+            case .invalidIDToken(let check): error = "The sign-in could not be verified (\(check))"
+            case .network(let text): error = "No connection to OpenAI: \(text)"
+            }
+        } catch {
+            self.error = "The sign-in did not complete: \(error.localizedDescription)"
+        }
+    }
+
+    /// Ends the wait for the sign-in's redirect, and with it the listener; nothing once the redirect is in.
+    func cancelSignIn() {
+        signInTask?.cancel()
+    }
+
+    /// Revokes the ChatGPT sign-in at OpenAI and forgets it here, confirmed or not.
+    func signOutOfChatGPT() async {
+        let result = await session.signOut()
+        chatGPT = nil
+        openAIModels = []
+        error = result == .unconfirmed
+            ? "Signed out here, but OpenAI did not confirm it. You can disconnect Vynscope in ChatGPT Settings." : nil
+    }
+
+    /// Fetches the models the ChatGPT account lists, in the server's order: those whose `visibility` is `list`, or
+    /// every one when none has a `visibility`. The picked model becomes the first listed when it is not among them. A
+    /// failure keeps the list as it was.
+    func loadOpenAIModels() async {
+        let reply: HTTPReply
+        do {
+            var request = URLRequest(url: URL(string: "https://api.openai.com/v1/models")!)
+            let token = try await session.validAccessToken(forPlanUse: false)
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            reply = try await URLSessionHTTPTransport().send(request)
+        } catch SignInError.signedOut {
+            // The session dropped the sign-in, or replaced it with one that completed meanwhile.
+            chatGPT = session.account
+            if chatGPT == nil { error = "Sign in to ChatGPT again in Settings" }
+            return
+        } catch {
+            guard !Task.isCancelled else { return }  // the sheet closed
+            let text = if case SignInError.network(let text) = error { text } else { error.localizedDescription }
+            self.error = "Could not load the model list: \(text)"
+            return
+        }
+        let body = try? JSON.parse(reply.body)
+        guard (200..<300).contains(reply.status), let entries = body?["data"]?.array else {
+            error = "Could not load the model list: \(body?["error"]?["message"]?.string ?? "HTTP \(reply.status)")"
+            return
+        }
+        let listed = entries.contains { $0["visibility"] != nil }
+            ? entries.filter { $0["visibility"]?.string == "list" } : entries
+        openAIModels = listed.compactMap { entry in
+            guard let id = entry["slug"]?.string ?? entry["id"]?.string else { return nil }
+            return (id, entry["display_name"]?.string ?? entry["id"]?.string ?? id)
+        }
+        if !openAIModels.contains(where: { $0.id == settings.openAIModel }) {
+            settings.openAIModel = openAIModels.first?.id
+            saveSettings()  // the sheet may have closed while the sign-in ran
+        }
     }
 
     /// The estimated cost of the conversation so far, each turn at its own model's price; nil when one of those
