@@ -434,6 +434,20 @@ func heldAccount(subject: String = "sub", scopes: [String] = [ChatGPT.planScope]
     #expect(keyRequests() == 3 && transport.requests.count == 7)
 }
 
+@Test func keysFetchedForTheSignInItselfAreNotFetchedAgain() async throws {
+    let rotated = tokenJSON.replacingOccurrences(of: signedIDToken.jwt, with: signedIDToken.rotatedJWT)
+    // A spare answer, so that a second fetch shows in the count instead of stopping the run.
+    let transport = FakeHTTPTransport([reply(200, rotated), reply(200, jwksJSON), reply(200, jwksJSON)])
+    let session = session(MemoryAccountStore(), transport)
+    let (_, attempt) = session.begin(redirect: redirect)
+    let fixed = SignInAttempt(verifier: attempt.verifier, state: attempt.state, nonce: "n0nce")
+    // The run's first sign-in: a set fetched for it cannot be stale, so a miss on it fails at once.
+    await #expect(throws: SignInError.invalidIDToken("key")) {
+        try await session.complete(callback: URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=\(attempt.state)&client_id=oaiapp_abc")!, attempt: fixed, redirect: redirect)
+    }
+    #expect(transport.requests.count == 2)
+}
+
 @Test func anAccountWithoutARefreshTokenSignsOutWithoutARequest() async throws {
     let store = MemoryAccountStore()
     store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"

@@ -347,10 +347,12 @@ public final class ChatGPTSession {
                 idToken: tokens.idToken ?? "", jwks: jwks, clientID: clientID, nonce: attempt.nonce, now: self.now())
         }
         let token: IDToken
+        let cached = jwks != nil
         do {
             token = try await check(keys())
-        } catch SignInError.invalidIDToken("key") {
-            // The kept keys lack the token's kid, as after OpenAI rotates its keys: they are fetched again, once.
+        } catch SignInError.invalidIDToken("key") where cached {
+            // Keys kept from an earlier sign-in lack the token's kid, as after OpenAI rotates its keys: they are
+            // fetched again, once. A set fetched for this sign-in cannot be stale, and is not.
             jwks = nil
             token = try await check(keys())
         }
