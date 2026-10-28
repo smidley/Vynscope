@@ -11,11 +11,13 @@ struct CarStep: View {
                     .disabled(flow.busy)
             } footer: {
                 Text("Turn the ignition on; there is no need to start driving.")
+                    .font(.vyn(.footnote))
+                    .foregroundStyle(Color.vynMuted)
             }
             if let vin = flow.vin {
                 Section {
                     Text(vin)
-                        .monospaced()
+                        .font(.vynMono(.body))
                         .textSelection(.enabled)
                     if let car = flow.car {
                         LabeledContent("Nickname", value: car.nickname)
@@ -27,6 +29,8 @@ struct CarStep: View {
                 } footer: {
                     if flow.car == nil {
                         Text("The first time a VIN shows up you give it a nickname; after that it is recognised.")
+                            .font(.vyn(.footnote))
+                            .foregroundStyle(Color.vynMuted)
                     }
                 }
             }
@@ -36,10 +40,12 @@ struct CarStep: View {
                         LabeledContent(car.nickname, value: car.vin)
                     }
                 }
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.vynMuted)
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.vynIvory)
     }
 }
 

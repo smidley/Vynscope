@@ -18,9 +18,10 @@ struct LogView: View {
             .onAppear {
                 if let last = flow.log.entries.last { proxy.scrollTo(last.id, anchor: .bottom) }
             }
+            .scrollContentBackground(.hidden)
+            .background(Color.vynIvory)
         }
-        .font(.caption)
-        .monospaced()
+        .font(.vynMono(.caption))
         .navigationTitle("Log")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {

@@ -49,6 +49,9 @@ struct AIStep: View {
                 ChatView()
             }
         }
+        // Ivory under every state: the forms' own background hidden, the chat on it.
+        .scrollContentBackground(.hidden)
+        .background(Color.vynIvory)
         .task { await ai.enter() }
         // Leaving the step (Back, Done) stops a check or a turn. The step change that leaves also removes this view,
         // which then need not see the change; its own disappearance it always sees.

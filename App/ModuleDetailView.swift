@@ -24,6 +24,8 @@ struct ModuleDetailView: View {
             #endif
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.vynIvory)
         .navigationTitle(module.title)
         .toolbar {
             ToolbarItem { LogButton() }
@@ -57,7 +59,7 @@ struct CodingFilesSection: View {
     var body: some View {
         Section("Coding files") {
             if files.isEmpty { Text("not reported") }
-            ForEach(files, id: \.self) { Text($0).monospaced() }
+            ForEach(files, id: \.self) { Text($0).font(.vynMono(.body)) }
         }
     }
 }
@@ -72,7 +74,7 @@ struct CodingDataSection: View {
                 let bytes = coding.reduce(0) { $0 + $1.value.count / 2 }
                 Text("^[\(coding.count) identifier](inflect: true) · \(sizeText(bytes))")
                 ForEach(coding, id: \.key) { did, hex in
-                    Text("\(did)  \(spaced(hex))").monospaced()
+                    Text("\(did)  \(spaced(hex))").font(.vynMono(.body))
                 }
             } else {
                 Text("Run Backup to read coding data")
@@ -101,6 +103,8 @@ struct SurveySection: View {
             }
         } footer: {
             Text("Debug builds only. Logs what the module answers to F100 to F1FF.")
+                .font(.vyn(.footnote))
+                .foregroundStyle(Color.vynMuted)
         }
     }
 }

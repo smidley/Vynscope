@@ -46,7 +46,7 @@ struct AISettingsView: View {
                         .disabled(ai.chatGPT == nil)
                         if ai.chatGPT == nil {
                             Text("Sign in to see your models")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.vynMuted)
                         }
                     }
                 }
@@ -58,6 +58,8 @@ struct AISettingsView: View {
                     Text("Effort for chat turns")
                 } footer: {
                     Text("The health-check summary always uses high.")
+                        .font(.vyn(.footnote))
+                        .foregroundStyle(Color.vynMuted)
                 }
                 if ai.settings.provider == .anthropic {
                     Section("Prices, dollars per million tokens") {
@@ -90,6 +92,8 @@ struct AISettingsView: View {
                 }
             }
             .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .background(Color.vynIvory)
             .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -131,7 +135,7 @@ struct AISettingsView: View {
             }
             .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Text(ai.hasKey ? "A key is saved" : "No key saved")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.vynMuted)
             Button("Remove key", role: .destructive) { ai.removeKey() }
                 .disabled(!ai.hasKey)
             errorLine
@@ -148,7 +152,7 @@ struct AISettingsView: View {
                 } else {
                     Text("Signed in as \(account.email), but Vynscope may not use your ChatGPT plan")
                     Text("Disconnect Vynscope in ChatGPT Settings, then sign in again and allow plan usage.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.vynMuted)
                 }
             }
             if ai.chatGPT?.mayUsePlan != true {
@@ -218,7 +222,7 @@ struct ChatGPTWelcome: View {
     var body: some View {
         VStack(spacing: 16) {
             Text("You're using your ChatGPT plan")
-                .font(.headline)
+                .font(.vyn(.headline, weight: .semibold))
             Text("Eligible AI requests in Vynscope use your ChatGPT plan. You can manage usage in ChatGPT settings.")
                 .multilineTextAlignment(.center)
             Link("Manage usage", destination: ChatGPTBrowser.usagePage)

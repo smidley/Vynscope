@@ -16,6 +16,11 @@ struct VynscopeApp: App {
             FlowView()
                 .environment(flow)
                 .environment(ai)
+                // Text keeps the system's primary color: a foreground style here would recolor every control too,
+                // over the tint, a destructive button's red and a prominent button's white label.
+                .font(.vyn(.body))
+                .background(Color.vynIvory)
+                .tint(Color.vynOrange)
         }
         #if os(macOS)
         .defaultSize(width: 420, height: 760)
@@ -55,6 +60,8 @@ struct FlowView: View {
                 }
             }
             .frame(maxHeight: .infinity, alignment: .top)
+            // The navigation stack paints its own background over the window's; this one reaches under its bar.
+            .background(Color.vynIvory)
             .navigationTitle(Text(flow.step.title))
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
@@ -79,7 +86,7 @@ struct FlowView: View {
     }
 }
 
-/// The steps by number and title, the current one bold.
+/// The steps by number and title, the current one bold in the accent.
 struct StepIndicator: View {
     let current: Step
 
@@ -87,12 +94,11 @@ struct StepIndicator: View {
         HStack {
             ForEach(Step.allCases, id: \.self) { step in
                 Text(step.indicatorLabel)
-                    .fontWeight(step == current ? .bold : .regular)
-                    .foregroundStyle(step == current ? .primary : .secondary)
+                    .font(step == current ? .vyn(.caption, weight: .bold) : .vyn(.caption))
+                    .foregroundStyle(step == current ? Color.vynOrange : Color.vynMuted)
                     .frame(maxWidth: .infinity)
             }
         }
-        .font(.caption)
         .padding(.vertical, 8)
     }
 }
