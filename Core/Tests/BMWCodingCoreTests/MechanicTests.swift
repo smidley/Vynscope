@@ -294,3 +294,50 @@ func healthCheckStopsAtTheNextRequestAfterACancel(command: String) async throws 
     #expect(check.contextJSON.contains(#""obdError" : "CAN ERROR""#))
     #expect(link.sent.last == "03")  // the check ended there
 }
+
+// The provider seam.
+
+@Test func thePromptNamesTheWebToolsTheProviderHas() {
+    let both = Mechanic.systemPrompt(carContext: "{}")[0]["text"]?.string ?? ""
+    let searchOnly = Mechanic.systemPrompt(carContext: "{}", web: .search)[0]["text"]?.string ?? ""
+    #expect(both.contains("- web_search and web_fetch: use them to look up"))
+    #expect(searchOnly.contains("- web_search: use it to look up") && !searchOnly.contains("web_fetch"))
+    #expect(Mechanic.systemPrompt(carContext: "ctx", web: .search)[1]["text"]?.string == "The car, from the health check:\nctx")
+}
+
+@Test func ownerMessagesTakeTheProvidersShape() {
+    let claude = Mechanic.ownerMessage("hi", provider: .anthropic)
+    #expect(claude == .object(["role": .string("user"), "content": .array([.object(["type": .string("text"), "text": .string("hi")])])]))
+    let gpt = Mechanic.ownerMessage("hi", provider: .openai)
+    #expect(gpt == .object(["type": .string("message"), "role": .string("user"), "content": .array([.object(["type": .string("input_text"), "text": .string("hi")])])]))
+    #expect(Mechanic.isOwnerMessage(claude, provider: .anthropic) && Mechanic.isOwnerMessage(gpt, provider: .openai))
+    let result = JSON.object(["type": .string("function_call_output"), "call_id": .string("c"), "output": .string("x")])
+    #expect(!Mechanic.isOwnerMessage(result, provider: .openai))
+    let toolResults = JSON.object(["role": .string("user"), "content": .array([.object(["type": .string("tool_result"), "tool_use_id": .string("t"), "content": .string("x")])])])
+    #expect(!Mechanic.isOwnerMessage(toolResults, provider: .anthropic))
+}
+
+// What the brief's tests above do not isolate.
+
+@Test func onlyTheWebLineDiffersBetweenTheTwoPrompts() {
+    func lines(_ web: Mechanic.WebTools) -> [Substring] {
+        (Mechanic.systemPrompt(carContext: "{}", web: web)[0]["text"]?.string ?? "").split(separator: "\n", omittingEmptySubsequences: false)
+    }
+    #expect(lines(.searchAndFetch).count == lines(.search).count)
+    let differing = zip(lines(.searchAndFetch), lines(.search)).filter { $0 != $1 }
+    #expect(differing.map(\.0) == ["- web_search and web_fetch: use them to look up what a code means, known faults and service notes for this car."])
+    #expect(differing.map(\.1) == ["- web_search: use it to look up what a code means, known faults and service notes for this car."])
+}
+
+@Test func eachProviderReadsOnlyItsOwnOwnerMessages() {
+    let claude = Mechanic.ownerMessage("hi", provider: .anthropic)
+    let gpt = Mechanic.ownerMessage("hi", provider: .openai)
+    #expect(!Mechanic.isOwnerMessage(claude, provider: .openai) && !Mechanic.isOwnerMessage(gpt, provider: .anthropic))
+    // The Responses API takes `content` as plain text too, and the type of a message may be left out; the owner's
+    // is a user's message of that type, and the mechanic's own never is.
+    #expect(Mechanic.isOwnerMessage(.object(["role": .string("user"), "content": .string("hi")]), provider: .openai))
+    #expect(!Mechanic.isOwnerMessage(.object(["type": .string("message"), "role": .string("assistant"), "content": .string("hi")]), provider: .openai))
+    #expect(!Mechanic.isOwnerMessage(.object(["type": .string("custom"), "role": .string("user"), "content": .string("hi")]), provider: .openai))
+    let reply = JSON.object(["role": .string("assistant"), "content": .array([.object(["type": .string("text"), "text": .string("hi")])])])
+    #expect(!Mechanic.isOwnerMessage(reply, provider: .anthropic))
+}

@@ -379,3 +379,18 @@ func aToolCallCutOffAtTheLimitTruncatesTheTurn(stop: String) async throws {
         .object(["type": .string("web_search_tool_result"), "tool_use_id": .string("srv"), "content": .array([])]),
         .object(["type": .string("text"), "text": .string("The nozzle is blocked")])])
 }
+@Test func aRoundCapAnswerThatStillCallsAToolLeavesNoCallWithoutItsResult() async throws {
+    var script = (0..<13).map { round in (200, [String: String](), toolUseStream(id: "t\(round)", name: "get_vehicle", input: "{}")) }
+    // The answer asked for without tools: its text, then a tool call all the same.
+    script.append((200, [:], refusalStream(text: "Here is what I have.").replacingOccurrences(of: #""stop_reason":"refusal""#, with: #""stop_reason":"tool_use""#)))
+    let transport = FakeTransport(script)
+    var messages: [JSON] = [userText("q")]
+    let turn = try await ClaudeClient(transport: transport, apiKey: "k", log: Log()).run(
+        messages: &messages, system: [], tools: [], model: "m", effort: "medium",
+        runTool: { _ in ToolResult("{}") }, onUpdate: { _ in })
+    let blocks = messages.flatMap { $0["content"]?.array ?? [] }
+    let called = blocks.filter { $0["type"]?.string == "tool_use" }.compactMap { $0["id"]?.string }
+    let answered = blocks.filter { $0["type"]?.string == "tool_result" }.compactMap { $0["tool_use_id"]?.string }
+    #expect(turn.stoppedAtRoundCap && Set(called) == Set(answered) && called.count == 13)
+    #expect(messages.last?["content"]?.array == [.object(["type": .string("text"), "text": .string("Here is what I have.")])])
+}

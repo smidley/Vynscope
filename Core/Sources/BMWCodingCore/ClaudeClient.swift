@@ -1,6 +1,7 @@
 import Foundation
 
-/// The seam to the Messages endpoint: one POST, answered with the status, the headers and the body's lines.
+/// The seam to a model's streaming endpoint, Messages or Responses: one POST, answered with the status, the headers and
+/// the body's lines.
 public protocol Transport: AnyObject {
     func post(body: Data, headers: [String: String]) async throws -> TransportResponse
 }
@@ -14,17 +15,24 @@ public struct TransportResponse {
     public var lines: AsyncThrowingStream<String, any Error>
 }
 
-/// `POST https://api.anthropic.com/v1/messages` with `URLSession`.
+/// `POST` to `url` on the ephemeral session of `URLSessionHTTPTransport`, which writes nothing to disk; `url` is the
+/// Messages endpoint unless told another.
 public final class URLSessionTransport: Transport {
-    public init() {}
+    private let url: URL
+
+    public init(url: URL = URL(string: "https://api.anthropic.com/v1/messages")!) { self.url = url }
 
     public func post(body: Data, headers: [String: String]) async throws -> TransportResponse {
-        var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = body
         request.allHTTPHeaderFields = headers
         let bytes: URLSession.AsyncBytes, response: URLResponse
-        do { (bytes, response) = try await URLSession.shared.bytes(for: request) } catch { throw Self.mapped(error) }
+        do {
+            (bytes, response) = try await URLSessionHTTPTransport.session.bytes(for: request)
+        } catch {
+            throw Self.mapped(error)
+        }
         let http = response as? HTTPURLResponse
         var fields: [String: String] = [:]
         for (name, value) in http?.allHeaderFields ?? [:] { fields["\(name)".lowercased()] = "\(value)" }
@@ -113,11 +121,13 @@ public struct Turn: Equatable, Sendable {
     /// The round cap was reached: after tool rounds the model was asked to answer without tools; after pauses the
     /// paused answer was dropped.
     public var stoppedAtRoundCap: Bool
+    /// The model would not take web search, so the turn asked again without it.
+    public var webSearchDropped = false
 }
 
 /// Talks to the Messages API: one streamed request at a time, with retries, and the mechanic's tool loop over
 /// them. Every request and its usage goes to the log; the key never does.
-public final class ClaudeClient {
+public final class ClaudeClient: ModelClient {
     /// Tool rounds and pauses per owner message.
     public static let roundCap = 12
     /// What each tool call past the round cap gets as its result instead of running.
@@ -230,9 +240,10 @@ public final class ClaudeClient {
 
     /// Runs one owner message, which `messages` already ends with, to its answer: sends, runs the tools the model
     /// calls through `runTool` and sends their results, and resends a `pause_turn` as it stands, for up to
-    /// `roundCap` rounds. `onUsage` is told the usage of each request as it completes, so a turn that throws later
-    /// has still reported what it used. `messages` takes every message of the turn only when it returns: when `send`
-    /// or `runTool` throws, it is left as it was, so it never holds a tool call without its result.
+    /// `roundCap` rounds; the round cap's answer, like a refusal and an answer a limit cut off, goes back as its text
+    /// and answered web lookups only. `onUsage` is told the usage of each request as it completes, so a turn that
+    /// throws later has still reported what it used. `messages` takes every message of the turn only when it returns:
+    /// when `send` or `runTool` throws, it is left as it was, so it never holds a tool call without its result.
     public func run(
         messages: inout [JSON], system: [JSON], tools: [JSON], model: String, effort: String,
         runTool: (ToolCall) async throws -> ToolResult, onUpdate: (StreamUpdate) -> Void,
@@ -252,12 +263,12 @@ public final class ClaudeClient {
             if followUp, message.usage.cacheReadInputTokens == 0 { log.note("ai: no cache read on this request") }
             // The rest works from the content as it is sent back, so a call abandoned at a fallback never runs.
             let content = Self.echo(message.content)
-            // A refusal, or an answer a limit cut off, goes back as its text and the answered web lookups its
-            // citations point to, and none of its calls runs: a half-made tool call or thinking block must never be
-            // sent back.
+            // A refusal, an answer a limit cut off, and the round cap's answer go back as their text and the answered
+            // web lookups its citations point to, and none of their calls runs: a half-made tool call or thinking
+            // block, or a call no result would answer, must never be sent back.
             let truncated = ["max_tokens", "model_context_window_exceeded"].contains(message.stopReason)
             let cut = truncated || message.stopReason == "refusal"
-            let answer = cut ? Self.textAndAnsweredLookups(content[...], in: content) : content
+            let answer = cut || toolChoiceNone ? Self.textAndAnsweredLookups(content[...], in: content) : content
             if !answer.isEmpty { conversation.append(Self.message("assistant", answer)) }
             if cut || toolChoiceNone {
                 turn.refused = message.stopReason == "refusal"

@@ -227,16 +227,59 @@ public final class Mechanic {
         vin.hasPrefix("WBY73") ? "G26 i4" : nil
     }
 
+    /// The web tools the model has, which the prompt names: Anthropic's search and fetch, or OpenAI's search alone.
+    public nonisolated enum WebTools: Equatable, Sendable {
+        case searchAndFetch
+        case search
+    }
+
     /// The system prompt: the instructions, then the car context after `The car, from the health check:`, as two
-    /// text blocks without cache markers (the client marks the last).
-    public static func systemPrompt(carContext: String) -> [JSON] {
-        [instructions, "The car, from the health check:\n" + carContext].map { text in
+    /// text blocks without cache markers (the client marks the last). The instructions name the `web` tools.
+    public static func systemPrompt(carContext: String, web: WebTools = .searchAndFetch) -> [JSON] {
+        [instructions(web: web), "The car, from the health check:\n" + carContext].map { text in
             .object(["type": .string("text"), "text": .string(text)])
         }
     }
 
+    /// A message the owner wrote, as `provider`'s API takes it: one text block, or one `input_text` part.
+    public static func ownerMessage(_ text: String, provider: Provider) -> JSON {
+        switch provider {
+        case .anthropic:
+            .object([
+                "role": .string("user"),
+                "content": .array([.object(["type": .string("text"), "text": .string(text)])]),
+            ])
+        case .openai:
+            .object([
+                "type": .string("message"), "role": .string("user"),
+                "content": .array([.object(["type": .string("input_text"), "text": .string(text)])]),
+            ])
+        }
+    }
+
+    /// Whether `message`, in `provider`'s shape, is one the owner wrote: a user message with text, not one that
+    /// carries tool results. A Responses message may leave out its `type` and may carry its content as plain text.
+    public static func isOwnerMessage(_ message: JSON, provider: Provider) -> Bool {
+        guard message["role"]?.string == "user" else { return false }
+        let content = message["content"]
+        switch provider {
+        case .anthropic:
+            return (content?.array ?? []).contains { $0["type"]?.string == "text" }
+        case .openai:
+            let type = message["type"]
+            return (type == nil || type == .string("message"))
+                && (content?.string != nil || (content?.array ?? []).contains { $0["type"]?.string == "input_text" })
+        }
+    }
+
     /// Who the model is, how it answers, its tools, and the line its suggested questions follow.
-    private static let instructions = """
+    private static func instructions(web: WebTools) -> String {
+        // How the line of the tools that names the web tools starts, by the tools the provider has.
+        let webTools = switch web {
+        case .searchAndFetch: "web_search and web_fetch: use them"
+        case .search: "web_search: use it"
+        }
+        return """
         You are a mechanic talking with the owner of this car through an app on their phone or Mac. The app is \
         connected to the car through an OBD-II adapter and reads the car for you with the tools below.
 
@@ -269,7 +312,7 @@ public final class Mechanic {
         \(readValueCap) per owner message, so read only what you need.
         - read_obd: one standard OBD-II mode 01 PID, the raw answer of every controller that answers, for you to \
         decode. Call it for live engine-side values; an electric car may answer nothing.
-        - web_search and web_fetch: use them to look up what a code means, known faults and service notes for this \
+        - \(webTools) to look up what a code means, known faults and service notes for this \
         car.
 
         End a summary with a line that reads exactly "\(suggestedQuestionsMarker)", then one to three short \
@@ -280,6 +323,7 @@ public final class Mechanic {
         saying why there are none), standard OBD-II codes and values by controller (obd, left out when no \
         controller answered), and the latest backup.
         """
+    }
 
     /// A tool call whose input passed the checks.
     private enum Request {

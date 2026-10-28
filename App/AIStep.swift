@@ -1,7 +1,8 @@
+import BMWCodingCore
 import SwiftUI
 
-/// The AI mechanic: the key notice, the health check as it runs, or the chat about the connected car, with Settings
-/// and New conversation in the toolbar.
+/// The AI mechanic: the notice to sign in, the health check as it runs, or the chat about the connected car, with
+/// Settings and New conversation in the toolbar.
 struct AIStep: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -11,10 +12,13 @@ struct AIStep: View {
     var body: some View {
         // One container for every state, so that `.task` and `.onDisappear` follow the step, not the state.
         VStack(spacing: 0) {
-            if !ai.hasKey {
+            if !ai.hasCredentials {
                 Form {
                     Section {
-                        Text("Enter your Anthropic API key in Settings to switch on the AI mechanic.")
+                        switch ai.settings.provider {
+                        case .anthropic: Text("Enter your Anthropic API key in Settings to switch on the AI mechanic.")
+                        case .openai: Text("Sign in to ChatGPT in Settings to switch on the AI mechanic.")
+                        }
                         Button("Settings") { showingSettings = true }
                     }
                 }
@@ -55,7 +59,7 @@ struct AIStep: View {
             }
             ToolbarItem {
                 Button("New conversation", systemImage: "square.and.pencil") { confirmingNew = true }
-                    .disabled(flow.busy || flow.diag == nil || !ai.hasKey)
+                    .disabled(flow.busy || flow.diag == nil || !ai.hasCredentials)
             }
         }
         .confirmationDialog("Start a new conversation?", isPresented: $confirmingNew) {
