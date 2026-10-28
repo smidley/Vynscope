@@ -185,3 +185,91 @@ func testBackup() -> Backup {
     #expect(line("read_value", ["module": .string("3D"), "did": .string("3000")], notOnTheCar)
         == "Asked for something the app could not read")
 }
+
+// The health check, the car context and the system prompt.
+
+@Test func healthCheckReadsEveryModuleThenStandardOBD() async throws {
+    let link = FakeLink { cmd in
+        switch cmd {
+        case "01 03 19 02 FF 00 00 00": return ["601 F1 03 59 02 FF 00 00 00"]
+        case "40 03 19 02 FF 00 00 00": return ["640 F1 07 59 02 FF 80 1E 2B 2F"]
+        case "56 03 19 02 FF 00 00 00": return ["656 F1 03 7F 19 11 00 00 00"]
+        case "03": return ["7E8 04 43 01 04 20"]
+        case "07": return ["NO DATA"]
+        case "01 00": return ["7E8 06 41 00 80 00 00 00"]
+        case "01 01": return ["7E8 06 41 01 00 07 E5 00"]
+        default: return ["OK"] } }
+    var steps: [String] = []
+    let check = try await Mechanic(diag: Diag(link: link, log: Log()), car: testCar(), log: Log()).healthCheck { steps.append($0) }
+    #expect(steps == ["Reading fault codes from ACSM_5 …", "Reading fault codes from BDC_BODY3 …", "Reading fault codes from FZD__35 …", "Reading standard OBD codes …", "Reading standard OBD values …"])
+    #expect(check.modules.map(\.address) == ["01", "40", "56"])
+    #expect(check.modules[0].faults == [] && check.modules[1].faults == [HealthCheck.Fault(code: "801E2B", status: "2F")])
+    #expect(check.modules[2].faults == nil && check.modules[2].faultRead == "refused (0x11)")
+    let obd = try #require(check.obd)
+    #expect(obd.storedCodes == ["7E8": ["P0420"]] && obd.pendingCodes == [:])
+    #expect(obd.supportedPIDs == ["7E8": ["01"]] && obd.values == ["7E8": ["01": "41010007E500"]])
+    #expect(link.sent.filter { $0.hasPrefix("01 ") && $0.count == 5 } == ["01 00", "01 01"])
+    #expect(check.vin == "WBY73AW04RFFAKE19" && check.chassis == "G26 i4")
+}
+@Test func healthCheckWithoutStandardOBD() async throws {
+    let link = FakeLink { cmd in cmd.contains("19 02") || cmd.hasPrefix("0") ? ["NO DATA"] : ["OK"] }  // every car request silent, every AT command OK
+    let check = try await Mechanic(diag: Diag(link: link, log: Log()), car: testCar(), log: Log()).healthCheck { _ in }
+    #expect(check.obd == nil)
+    #expect(check.modules.allSatisfy { $0.faultRead == "no answer" })
+}
+@Test func healthCheckStopsOnALinkError() async throws {
+    let link = FakeLink { cmd in cmd.hasPrefix("40 03 19") ? ["CAN ERROR"] : ["OK"] }
+    await #expect(throws: LinkError.adapterError("CAN ERROR")) {
+        try await Mechanic(diag: Diag(link: link, log: Log()), car: testCar(), log: Log()).healthCheck { _ in }
+    }
+}
+@Test func contextIsStableAndSystemPromptHasTwoBlocks() async throws {
+    let link = FakeLink { cmd in cmd.contains("19 02") || cmd.hasPrefix("0") ? ["NO DATA"] : ["OK"] }
+    let check = try await Mechanic(diag: Diag(link: link, log: Log()), car: testCar(backup: testBackup()), log: Log()).healthCheck { _ in }
+    #expect(check.contextJSON == check.contextJSON)
+    #expect(check.contextJSON.range(of: "\"adapter\"")!.lowerBound < check.contextJSON.range(of: "\"backup\"")!.lowerBound)
+    #expect(check.backup == HealthCheck.BackupSummary(date: "2026-10-26T21:03:00Z", modules: 1))
+    let prompt = Mechanic.systemPrompt(carContext: check.contextJSON)
+    #expect(prompt.count == 2 && prompt[1]["text"]?.string?.hasSuffix(check.contextJSON) == true)
+    #expect(prompt.allSatisfy { $0["cache_control"] == nil })
+    for name in ["get_vehicle", "read_faults", "read_identification", "read_coding", "read_value", "read_obd", "Suggested questions:"] {
+        #expect(prompt[0]["text"]?.string?.contains(name) == true)
+    }
+}
+
+// What the health check scenarios above do not pin down.
+
+@Test(arguments: ["40 03 19 02 FF 00 00 00", "03"])
+func healthCheckStopsAtTheNextRequestAfterACancel(command: String) async throws {
+    let link = FakeLink { cmd in
+        if cmd == command { withUnsafeCurrentTask { $0?.cancel() } }  // Stop pressed while this request runs
+        return ["OK"] }
+    let mechanic = Mechanic(diag: Diag(link: link, log: Log()), car: testCar(), log: Log())
+    let check = Task { try await mechanic.healthCheck { _ in } }
+    await #expect(throws: CancellationError.self) { try await check.value }
+    #expect(link.sent.last == command)  // the request in flight finished; nothing was sent after it
+}
+@Test func healthCheckFollowsTheSupportPIDsUpToSixtyFourValues() async throws {
+    let link = FakeLink { cmd in
+        switch cmd {
+        case "03": return ["7E8 01 43", "7E9 02 43 00"]  // 7E8's answer is cut short: left out, not "no codes"
+        case "01 00": return ["7E8 06 41 00 FF FF FF FF", "7E9 06 41 00 80 00 00 00"]
+        case "01 20": return ["7E8 06 41 20 FF FF FF FF"]
+        case "01 40": return ["7E8 06 41 40 FF FF FF FF"]
+        case _ where cmd.hasPrefix("01 ") && cmd.count == 5: return ["7E8 03 41 \(cmd.suffix(2)) 00"]
+        default: return cmd.hasPrefix("AT") ? ["OK"] : ["NO DATA"] } }
+    let check = try await Mechanic(diag: Diag(link: link, log: Log()), car: testCar(), log: Log()).healthCheck { _ in }
+    let obd = try #require(check.obd)
+    #expect(obd.storedCodes == ["7E9": []] && obd.pendingCodes == [:])
+    let mode01 = link.sent.filter { $0.hasPrefix("01 ") && $0.count == 5 }
+    #expect(mode01.count == 3 + 64 && mode01 == mode01.sorted() && Set(mode01).count == mode01.count)
+    #expect(mode01.last == "01 42")  // 31 values below 20, 31 below 40, then 41 and 42
+    #expect(obd.values["7E8"]?.count == 64 && obd.values["7E8"]?["20"] == nil && obd.values["7E8"]?["40"] == nil)
+    #expect(obd.values["7E8"]?["1F"] == "411F00" && obd.values["7E9"] == nil)
+    #expect(obd.supportedPIDs["7E9"] == ["01"] && obd.supportedPIDs["7E8"]?.count == 96)
+}
+@Test func standardOBDIsKeptWhenOnlyPIDZeroAnswers() async throws {
+    let link = FakeLink { cmd in cmd == "01 00" ? ["7E8 06 41 00 00 00 00 00"] : cmd.hasPrefix("AT") ? ["OK"] : ["NO DATA"] }
+    let check = try await Mechanic(diag: Diag(link: link, log: Log()), car: testCar(), log: Log()).healthCheck { _ in }
+    #expect(check.obd == HealthCheck.OBDHealth(storedCodes: [:], pendingCodes: [:], supportedPIDs: ["7E8": []], values: [:]))
+}

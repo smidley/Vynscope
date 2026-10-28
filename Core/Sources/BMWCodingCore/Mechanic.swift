@@ -19,6 +19,63 @@ public struct MechanicCar: Equatable, Sendable {
     }
 }
 
+/// What the health check found: the car context the model starts from, sent as JSON in the system prompt.
+public struct HealthCheck: Codable, Equatable, Sendable {
+    public var vin: String
+    public var nickname: String
+    public var chassis: String?
+    public var adapter: Adapter
+    public var modules: [ModuleHealth]
+    /// `nil` when no controller answered any standard request.
+    public var obd: OBDHealth?
+    public var backup: BackupSummary?
+    /// When the check ran: ISO 8601, UTC, whole seconds.
+    public var readAt: String
+
+    public struct Adapter: Codable, Equatable, Sendable {
+        public var model, firmware: String
+    }
+
+    /// A module as the scan found it, with its fault codes.
+    public struct ModuleHealth: Codable, Equatable, Sendable {
+        public var address: String
+        public var name, description: String?
+        public var signed: Bool
+        public var hardware, software, serial: String?
+        public var codingFiles: [String]
+        /// From a positive answer to the fault read; otherwise `nil` and `faultRead` says why.
+        public var faults: [Fault]?
+        /// `refused (0x11)`, `no answer` or `unreadable <hex>`.
+        public var faultRead: String?
+    }
+
+    public struct Fault: Codable, Equatable, Sendable {
+        public var code, status: String
+    }
+
+    /// Standard OBD-II, every map keyed by the CAN id a controller answered on, as `7E8`.
+    public struct OBDHealth: Codable, Equatable, Sendable {
+        public var storedCodes, pendingCodes: [String: [String]]
+        /// The mode 01 PIDs each controller advertised, as two hex digits.
+        public var supportedPIDs: [String: [String]]
+        /// PID to the controller's whole answer as hex.
+        public var values: [String: [String: String]]
+    }
+
+    public struct BackupSummary: Codable, Equatable, Sendable {
+        public var date: String
+        public var modules: Int
+    }
+
+    /// The check as pretty-printed JSON with sorted keys: the same bytes every time, so the prompt caches.
+    public var contextJSON: String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+        // Cannot fail: everything in a check is a string, a number, a flag, or a collection of them.
+        return String(decoding: try! encoder.encode(self), as: UTF8.self)
+    }
+}
+
 /// The mechanic's reach into the car: six read-only tools for the model, each input checked before anything is
 /// sent, and a cap on live reads per owner message. Every call and its result go to the log.
 public final class Mechanic {
@@ -64,6 +121,12 @@ public final class Mechanic {
         .object(["type": .string("web_fetch_20260209"), "name": .string("web_fetch")]),
     ]
 
+    /// The owner message every conversation starts with: the summary of the health check.
+    public static let firstQuestion =
+        "Summarize my car's state from the health check: what matters, what does not, and what you looked up."
+    /// The line a summary's suggested questions follow, which the chat shows as chips.
+    public static let suggestedQuestionsMarker = "Suggested questions:"
+
     private static let moduleShape = #"two hex digits of the diagnostic address, as "40""#
     private static let didShape = #"four hex digits, as "3002""#
 
@@ -100,6 +163,24 @@ public final class Mechanic {
         return result
     }
 
+    /// The health check a conversation starts from: every module's fault codes, in order, then standard OBD-II,
+    /// with `progress` told each step. A module that refuses or does not answer is recorded and the check goes on;
+    /// a `LinkError` or a cancel ends it and is thrown.
+    public func healthCheck(progress: (String) -> Void) async throws -> HealthCheck {
+        var modules: [HealthCheck.ModuleHealth] = []
+        for module in car.modules {
+            try Task.checkCancellation()  // between two modules, so no answer is left unread
+            progress("Reading fault codes from \(Self.name(of: module)) …")
+            modules.append(try await health(of: module))
+        }
+        let obd = try await standardOBD(progress: progress)
+        return HealthCheck(
+            vin: car.vin, nickname: car.nickname, chassis: Self.chassis(forVIN: car.vin),
+            adapter: .init(model: car.adapter.model, firmware: car.adapter.firmware), modules: modules, obd: obd,
+            backup: car.latestBackup.map { .init(date: $0.date.formatted(.iso8601), modules: $0.modules.count) },
+            readAt: Date.now.formatted(.iso8601))
+    }
+
     /// The line the chat shows for a call and its result, a module named by its table name or as `0x5B`.
     public static func activityLine(for call: ToolCall, result: ToolResult, car: MechanicCar) -> String {
         guard let request = try? Self.request(call, car: car) else {
@@ -129,6 +210,60 @@ public final class Mechanic {
     public static func chassis(forVIN vin: String) -> String? {
         vin.hasPrefix("WBY73") ? "G26 i4" : nil
     }
+
+    /// The system prompt: the instructions, then the car context after `The car, from the health check:`, as two
+    /// text blocks without cache markers (the client marks the last).
+    public static func systemPrompt(carContext: String) -> [JSON] {
+        [instructions, "The car, from the health check:\n" + carContext].map { text in
+            .object(["type": .string("text"), "text": .string(text)])
+        }
+    }
+
+    /// Who the model is, how it answers, its tools, and the line its suggested questions follow.
+    private static let instructions = """
+        You are a mechanic talking with the owner of this car through an app on their phone or Mac. The app is \
+        connected to the car through an OBD-II adapter and reads the car for you with the tools below.
+
+        How to answer:
+        - Be concrete and brief. Write plain sentences and short lists; **bold** and `code` show as such, headings \
+        and tables do not.
+        - Prefer reading the car over guessing: when a fresh read would settle a question, make it.
+        - Say which module and which code you are talking about: the module by name and address (BDC_BODY3 at 40), \
+        the code as the car reports it (801E2B, P0420).
+        - Keep what the car reports apart from what you infer from it. Say when you are guessing, and do not state \
+        what a code means as fact unless you know it or looked it up.
+        - When something you say comes from a web search or a fetched page, cite it.
+        - You can only read. You cannot change anything about the car (no coding, no clearing of fault codes, no \
+        resets or actuator tests), and you never claim to have. When the owner asks for a change, say plainly that \
+        you cannot make it, and explain what it would involve. Nor can you run the module scan or a backup: the \
+        owner runs them from the app's Modules and Backup steps. Say so when asked, and suggest them when fresher \
+        data would help.
+        - If you decline to answer something, say so in one line.
+
+        Tools:
+        - get_vehicle: the car, its adapter and every module with its address. Call it when you need an address or \
+        want to see what is on the car.
+        - read_faults: one module's fault codes, or with "obd" the standard OBD-II codes. The health check below \
+        already holds every module's codes; call it only to see whether they changed.
+        - read_identification: what a module said about itself in the scan (identifiers, hardware and software \
+        versions, coding files); it reads nothing from the car. Call it to look at a module's versions.
+        - read_coding: a module's coding identifiers in the latest backup, or one identifier's bytes, from the \
+        backup or read live when the backup lacks it. Call it to see how an option is coded.
+        - read_value: a live read of one data identifier on one module. Call it for live values; at most \
+        \(readValueCap) per owner message, so read only what you need.
+        - read_obd: one standard OBD-II mode 01 PID, the raw answer of every controller that answers, for you to \
+        decode. Call it for live engine-side values; an electric car may answer nothing.
+        - web_search and web_fetch: use them to look up what a code means, known faults and service notes for this \
+        car.
+
+        End a summary with a line that reads exactly "\(suggestedQuestionsMarker)", then one to three short \
+        questions the owner might ask next, each on its own line starting with "- ", and nothing after them. Never \
+        write that line otherwise.
+
+        The health check's findings follow as JSON: the car, each module with its fault codes (faults, or faultRead \
+        saying why there are none), standard OBD-II codes and values by controller (obd, left out when no \
+        controller answered), and the latest backup.
+        """
 
     /// A tool call whose input passed the checks.
     private enum Request {
@@ -296,6 +431,65 @@ public final class Mechanic {
             "pid": .string(Self.hex([pid])),
             "answers": .object(answers.reduce(into: [:]) { $0[Self.controller($1.key)] = .string(Self.hex($1.value)) }),
         ])
+    }
+
+    /// One module of the health check: what the scan found, and its fault codes or why there are none.
+    private func health(of module: DiscoveredModule) async throws -> HealthCheck.ModuleHealth {
+        var health = HealthCheck.ModuleHealth(
+            address: Self.hex([module.address]), name: module.name, description: module.description,
+            signed: module.signed, hardware: module.hardware, software: module.software, serial: module.serial,
+            codingFiles: module.codingFiles)
+        try await diag.select(module: module.address)
+        switch try await diag.readFaults(module.address) {
+        case .positive(let payload):
+            if let faults = DTCParse.bmwFaults(payload) {
+                health.faults = faults.map { .init(code: $0.code, status: Self.hex([$0.status])) }
+            } else {
+                health.faultRead = "unreadable \(Self.hex(payload))"
+            }
+        case .negative(let code): health.faultRead = "refused (0x\(Self.hex([code])))"
+        case .noResponse: health.faultRead = "no answer"
+        }
+        return health
+    }
+
+    /// Standard OBD-II for the health check: stored and pending codes, then mode 01. PID `00` first, then each
+    /// PID the controllers advertise, one request each in ascending order and at most 64 value requests in all;
+    /// `20` is read only when a controller advertised it in `00`, `40` only when one advertised it in `20`. `nil`
+    /// when modes `03` and `07` and PID `00` all went unanswered.
+    private func standardOBD(progress: (String) -> Void) async throws -> HealthCheck.OBDHealth? {
+        func request(_ payload: [UInt8]) async throws -> [UInt16: [UInt8]] {
+            try Task.checkCancellation()  // between two requests, so no answer is left unread
+            return try await diag.obd(payload)
+        }
+        progress("Reading standard OBD codes …")
+        let stored = try await request([0x03]), pending = try await request([0x07])
+        progress("Reading standard OBD values …")
+        var supported: [String: [String]] = [:], values: [String: [String: String]] = [:]
+        var answeredSupport = false, valueRequests = 0
+        var base: UInt8? = 0x00
+        while let current = base {
+            let answers = try await request([0x01, current])
+            answeredSupport = answeredSupport || !answers.isEmpty
+            var advertised: Set<UInt8> = []
+            for (id, answer) in answers {
+                guard let pids = DTCParse.supportedPIDs(answer, base: current) else { continue }
+                supported[Self.controller(id), default: []] += pids.map { Self.hex([$0]) }
+                advertised.formUnion(pids)
+            }
+            // `20` and `40` are support PIDs: read as the next base when advertised, never as values.
+            base = current < 0x40 && advertised.contains(current + 0x20) ? current + 0x20 : nil
+            for pid in advertised.sorted() where pid != base && valueRequests < 64 {
+                valueRequests += 1
+                for (id, answer) in try await request([0x01, pid]) {
+                    values[Self.controller(id), default: [:]][Self.hex([pid])] = Self.hex(answer)
+                }
+            }
+        }
+        guard !stored.isEmpty || !pending.isEmpty || answeredSupport else { return nil }
+        return .init(
+            storedCodes: Self.codes(stored), pendingCodes: Self.codes(pending), supportedPIDs: supported,
+            values: values)
     }
 
     private static func reading(
