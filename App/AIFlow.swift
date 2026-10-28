@@ -95,6 +95,9 @@ final class AIFlow {
     @ObservationIgnored private var turnTask: Task<Void, Never>?
     /// The wait for the sign-in's redirect, which Cancel and the Safari sheet's dismissal end.
     @ObservationIgnored private var signInTask: Task<URL, any Error>?
+    /// The last turn on OpenAI ended in a refused token that a renewal answered: a refusal in the next one is not
+    /// renewed again, it signs out.
+    @ObservationIgnored private var refusedAfterRenewal = false
     private static let welcomeShownKey = "chatgptWelcomeShown"
     private static let responsesURL = URL(string: "https://api.openai.com/v1/responses")!
 
@@ -438,7 +441,8 @@ final class AIFlow {
     /// Anthropic's on the API key, OpenAI's on the ChatGPT plan. Streams its text into `streaming` and its reads and
     /// lookups into `activity`, then records the turn with what its requests used and its activity. A stop, and the
     /// plan's usage limit, keep the text streamed so far; an error keeps the conversation as it was before the answer
-    /// and records the error. A token OpenAI refuses is renewed before the sign-in is given up. Either way the
+    /// and records the error. A token OpenAI refuses is renewed before the sign-in is given up, unless it was renewed
+    /// for the refusal that ended the OpenAI turn before: then the sign-in is given up at once. Either way the
     /// conversation is saved, never holds a tool call without its result, and is ready for the next message, also when
     /// the turn could not start.
     private func runTurn(effort: String) async {
@@ -468,6 +472,10 @@ final class AIFlow {
             var messages = conversation.messages
             // The turn's OpenAI client, which learns the models that refuse web search.
             var openAI: OpenAIClient?
+            // Whether the OpenAI turn before ended in a refusal that a renewal answered; this turn sets it again only
+            // with a refusal it renews, so any other end leaves it cleared.
+            let refusedBefore = provider == .openai && refusedAfterRenewal
+            if provider == .openai { refusedAfterRenewal = false }
             do {
                 let client: any ModelClient
                 switch provider {
@@ -520,8 +528,9 @@ final class AIFlow {
                     stoppedAtRoundCap: false, stopped: true, model: model, activity: activity, provider: provider))
             } catch {
                 var error = error
-                // A refused token is renewed first: a new sign-in is asked for only when renewing fails for good.
-                if case OpenAIError.unauthorized = error {
+                // A refused token is renewed first: a new sign-in is asked for only when renewing fails for good, or
+                // when the token renewed for the turn before is refused too.
+                if case OpenAIError.unauthorized = error, !refusedBefore {
                     do { _ = try await session.renew() } catch let renewal { error = renewal }
                 }
                 let text: String
@@ -540,7 +549,11 @@ final class AIFlow {
                     text = Self.notEligible(message)  // not tried again: the account, not the request, is refused
                 case OpenAIError.api(_, let code, let message, _), OpenAIError.planLimit(let code, let message, _):
                     text = "API error (\(code)): \(message)"
+                case OpenAIError.unauthorized where refusedBefore:
+                    await signOutOfChatGPT()
+                    text = "OpenAI refused the renewed token too. Sign in again in Settings."
                 case OpenAIError.unauthorized:
+                    refusedAfterRenewal = true
                     text = "OpenAI refused the request; try again"  // renewed: Try again sends the new token
                 case OpenAIError.network(let message), SignInError.network(let message):
                     text = "No connection to OpenAI: \(message)"
