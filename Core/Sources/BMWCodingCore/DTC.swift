@@ -21,9 +21,10 @@ public enum DTCParse {
 
     /// The codes in the answer to mode `03` (stored) or `07` (pending) on CAN: `0x43` or `0x47`, a count byte, then
     /// 2-byte codes. The count byte is not trusted: every whole pair in the bytes present is read, and `00 00` pairs
-    /// are skipped. `nil` unless the first byte is `0x43` or `0x47`.
+    /// are skipped. `nil` unless the first byte is `0x43` or `0x47` and the count byte is there: a lone `43` is a
+    /// garbled answer, not "no codes".
     public static func obdCodes(_ payload: [UInt8]) -> [String]? {
-        guard payload.first == 0x43 || payload.first == 0x47 else { return nil }
+        guard payload.count >= 2, payload.first == 0x43 || payload.first == 0x47 else { return nil }
         return stride(from: 2, through: payload.count - 2, by: 2).compactMap { i in
             let (a, b) = (payload[i], payload[i + 1])
             return a == 0 && b == 0 ? nil : obdCode(a, b)

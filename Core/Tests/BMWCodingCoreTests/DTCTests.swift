@@ -31,7 +31,7 @@ import Testing
     #expect(DTCParse.obdCodes([0x43, 0x01, 0x04, 0x20, 0xC1, 0x00]) == ["P0420", "U0100"])  // the count says one
     #expect(DTCParse.obdCodes([0x43, 0x09, 0x04, 0x20]) == ["P0420"])  // the count says nine
     #expect(DTCParse.obdCodes([0x43, 0x02, 0x04, 0x20, 0xC1]) == ["P0420"])  // half a pair at the end
-    #expect(DTCParse.obdCodes([0x43]) == [])
+    #expect(DTCParse.obdCodes([0x43]) == nil)  // a lone service byte is garbled, not "no codes"
     #expect(DTCParse.obdCodes([]) == nil)
 }
 @Test func readsEveryFlagOfASupportedPIDAnswer() {
