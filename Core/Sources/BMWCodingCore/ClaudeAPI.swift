@@ -137,14 +137,17 @@ public struct StreamAssembler {
     /// The input of each `tool_use` and `server_tool_use` block that is still streaming, as the text of JSON that
     /// arrives in pieces, by block index.
     private var partialInput: [Int: String] = [:]
+    /// The input text of the first tool call whose input is not a JSON object, which reads as `{}` in its block.
+    private var badInput: String?
 
     public init() {}
 
     /// Applies the next event of the stream. A `text_delta` returns `.text`, a `content_block_stop` the finished
     /// `.block`, `message_stop` `.finished`; any other event returns `nil`, `ping`, an event this does not know (a
     /// later API version may add some) and a delta or stop for a block that never started among them. Throws
-    /// `ClaudeError.api(status: nil, ...)` for an `error` event, and `ClaudeError.badToolInput` when the input of a
-    /// tool call, complete at its `content_block_stop`, is not a JSON object.
+    /// `ClaudeError.api(status: nil, ...)` for an `error` event. A tool call whose input is not a JSON object when
+    /// its block stops gets `{}` instead; `message_stop` then throws `ClaudeError.badToolInput` with the first such
+    /// text, unless the message stopped for `max_tokens`, which cut that input off.
     public mutating func apply(_ event: SSEEvent) throws -> StreamUpdate? {
         // ponytail: data that is not JSON reads as nothing, so a corrupt event is skipped without a word. Throw
         // instead if a stream is ever seen arriving garbled.
@@ -187,11 +190,11 @@ public struct StreamAssembler {
             if let text = partialInput.removeValue(forKey: index) {
                 if text.isEmpty {
                     block["input"] = .object([:])  // a tool called without arguments
-                } else {
-                    guard case .object(let input)? = try? JSON.parse(Data(text.utf8)) else {
-                        throw ClaudeError.badToolInput(text)
-                    }
+                } else if case .object(let input)? = try? JSON.parse(Data(text.utf8)) {
                     block["input"] = .object(input)
+                } else {
+                    block["input"] = .object([:])
+                    badInput = badInput ?? text
                 }
                 blocks[index] = block
             }
@@ -201,6 +204,7 @@ public struct StreamAssembler {
             if let details = body["delta"]?["stop_details"], details != .null { stopDetails = details }
             usage.update(from: body["usage"])
         case "message_stop":
+            if let text = badInput, stopReason != "max_tokens" { throw ClaudeError.badToolInput(text) }
             return .finished
         case "error":
             let error = body["error"]
