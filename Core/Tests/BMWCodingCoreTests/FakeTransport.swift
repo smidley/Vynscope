@@ -148,3 +148,22 @@ func webSearchItem(_ index: Int, query: String) -> ResponsesItemFixture {
     ]
     return ResponsesItemFixture(events: events.joined(), json: item)
 }
+
+/// Answers `send` from a script, one reply per request, in order, and records every request.
+final class FakeHTTPTransport: HTTPTransport {
+    private(set) var requests: [URLRequest] = []
+    private var script: [HTTPReply]
+
+    init(_ script: [HTTPReply]) { self.script = script }
+
+    func send(_ request: URLRequest) async throws -> HTTPReply {
+        requests.append(request)
+        precondition(!script.isEmpty, "unscripted request")
+        return script.removeFirst()
+    }
+}
+
+/// A reply with `status`, `body` as UTF-8 and `headers`.
+func reply(_ status: Int, _ body: String, headers: [String: String] = [:]) -> HTTPReply {
+    HTTPReply(status: status, headers: headers, body: Data(body.utf8))
+}
