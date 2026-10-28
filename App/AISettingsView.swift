@@ -99,7 +99,7 @@ struct AISettingsView: View {
             .confirmationDialog("Clear conversations?", isPresented: $confirmingClear) {
                 Button("Clear conversations", role: .destructive) { ai.clearConversations() }
             } message: {
-                Text("The saved conversations of every car are deleted.")
+                Text("The saved \(ai.settings.provider.displayName) conversations of every car are deleted.")
             }
             .onChange(of: ai.settings) { ai.saveSettings() }
             .onChange(of: ai.settings.provider) { Task { await ai.switchProvider() } }

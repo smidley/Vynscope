@@ -198,3 +198,44 @@ func literalJSON(_ text: String) -> String { String(decoding: JSON.string(text).
         try await OpenAIClient(transport: transport, accessToken: "t", log: Log()).send(openAIRequest()) { _ in }
     }
 }
+
+/// Hands out its tokens one per request, then throws `NoToken`, as a sign-in that can no longer give one does.
+private final class TokenSequence {
+    private var tokens: [String]
+    init(_ tokens: [String]) { self.tokens = tokens }
+    func next() throws -> String {
+        guard !tokens.isEmpty else { throw NoToken() }
+        return tokens.removeFirst()
+    }
+}
+private struct NoToken: Error {}
+
+@Test func everyRequestAsksForTheTokenAgainARetryToo() async throws {
+    let transport = FakeTransport([
+        (200, [:], responsesStream([functionCallItem(0, callId: "c", name: "get_vehicle", arguments: "{}")])),
+        (500, [:], errorBody("server_error", "boom")),
+        (200, [:], responsesStream([textItem(0, "Done")])),
+    ])
+    let tokens = TokenSequence(["t1", "t2", "t3"])
+    let client = OpenAIClient(transport: transport, tokenProvider: { try await tokens.next() }, log: Log()) { _ in }
+    var items = [ownerItem("q")]
+    _ = try await client.run(messages: &items, system: [], tools: Mechanic.tools, model: "m", effort: "low",
+        runTool: { _ in ToolResult("{}") }, onUpdate: { _ in }, onUsage: { _ in })
+    #expect(transport.calls.map { $0.headers["authorization"] } == ["Bearer t1", "Bearer t2", "Bearer t3"])
+}
+
+@Test func whatTheTokenProviderThrowsLeavesTheConversationAsItWas() async throws {
+    let log = Log()
+    let transport = FakeTransport([
+        (200, [:], responsesStream([functionCallItem(0, callId: "c", name: "get_vehicle", arguments: "{}")])),
+    ])
+    let tokens = TokenSequence(["t1"])
+    let client = OpenAIClient(transport: transport, tokenProvider: { try await tokens.next() }, log: log)
+    var items = [ownerItem("q")], ran = 0
+    await #expect(throws: NoToken.self) {
+        try await client.run(messages: &items, system: [], tools: Mechanic.tools, model: "m", effort: "low",
+            runTool: { _ in ran += 1; return ToolResult("{}") }, onUpdate: { _ in }, onUsage: { _ in })
+    }
+    #expect(ran == 1 && transport.calls.count == 1 && items == [ownerItem("q")])
+    #expect(!log.entries.contains { $0.text.hasPrefix("ai: error") || $0.text.hasPrefix("ai: network") })
+}

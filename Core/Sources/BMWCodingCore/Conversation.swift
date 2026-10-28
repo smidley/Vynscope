@@ -152,10 +152,19 @@ public struct ConversationStore {
         }
     }
 
-    /// Removes every conversation: the `Conversations` folder. Its being missing is not an error.
-    public func deleteAll() throws {
+    /// Removes every car's conversation with `provider`: the files `<vin>-<provider>.json`, and for Anthropic's the
+    /// files of before there were providers, `<vin>.json`. The other provider's files stay. The folder's being missing
+    /// is not an error.
+    public func deleteAll(provider: Provider) throws {
         guard FileManager.default.fileExists(atPath: folder.path) else { return }
-        try FileManager.default.removeItem(at: folder)
+        for url in try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        where url.pathExtension == "json" {
+            let name = url.deletingPathExtension().lastPathComponent
+            // A VIN has no dash, so a name without one is a file of before there were providers.
+            if name.hasSuffix("-\(provider.rawValue)") || (provider == .anthropic && !name.contains("-")) {
+                try FileManager.default.removeItem(at: url)
+            }
+        }
     }
 
     private var folder: URL { directory.appendingPathComponent("Conversations") }

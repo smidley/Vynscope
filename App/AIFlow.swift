@@ -192,10 +192,10 @@ final class AIFlow {
         await healthCheck()
     }
 
-    /// Deletes the saved conversations of every car.
+    /// Deletes the picked provider's saved conversations of every car; the other provider's stay.
     func clearConversations() {
         do {
-            try store.deleteAll()
+            try store.deleteAll(provider: settings.provider)
         } catch {
             self.error = "Could not clear the conversations: \(error.localizedDescription)"
             return
@@ -434,7 +434,7 @@ final class AIFlow {
         let provider = conversation.provider
         guard case let (diag, car)? = connectedCar() else { error = "Not connected"; return }
         guard let model = model(for: provider) else { error = "Pick a model in Settings"; return }
-        // Anthropic's key; a turn on the plan asks the sign-in for a token instead, once it runs.
+        // Anthropic's key; a turn on the plan asks the sign-in for a token before each request instead.
         guard let key = provider == .anthropic ? Keychain.apiKey() : "" else {
             error = "No API key: enter one in Settings"
             return
@@ -460,9 +460,11 @@ final class AIFlow {
                 case .anthropic:
                     client = ClaudeClient(transport: URLSessionTransport(), apiKey: key, log: flow.log)
                 case .openai:
-                    let token = try await session.validAccessToken()
+                    // A token for each request, renewed when it expires: a turn may outlive one.
+                    let session = self.session
                     let made = OpenAIClient(
-                        transport: URLSessionTransport(url: Self.responsesURL), accessToken: token, log: flow.log,
+                        transport: URLSessionTransport(url: Self.responsesURL),
+                        tokenProvider: { try await session.validAccessToken() }, log: flow.log,
                         webSearchUnavailable: webSearchUnavailable)
                     openAI = made
                     client = made

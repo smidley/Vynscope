@@ -18,9 +18,41 @@ private func temporaryFolder() -> URL {
     #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Conversations/WBY73AW04RFFAKE19-anthropic.json").path))
     #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) == conversation)
     #expect(conversation.totalUsage.webSearchRequests == 1)
-    try store.deleteAll()
+    try store.deleteAll(provider: .anthropic)
     #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) == nil)
-    try store.deleteAll()
+    try store.deleteAll(provider: .anthropic)
+}
+@Test func deleteAllRemovesOneProvidersConversationsOfEveryCar() throws {
+    let folder = temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let store = ConversationStore(directory: folder)
+    try store.deleteAll(provider: .openai)  // no folder yet: not an error
+    let started = Date(timeIntervalSince1970: 1_793_000_000), cars = ["WBY73AW04RFFAKE19", "WBA00000000FAKE01"]
+    func save(_ vin: String, _ provider: Provider) throws {
+        try store.save(Conversation(vin: vin, started: started, model: "m", carContext: "{}", provider: provider))
+    }
+    for vin in cars {
+        try save(vin, .anthropic)
+        try save(vin, .openai)
+    }
+    // A third car's conversation from before there were providers, which is Anthropic's.
+    try save("WBA00000000FAKE02", .anthropic)
+    let conversations = folder.appending(path: "Conversations")
+    try FileManager.default.moveItem(
+        at: conversations.appending(path: "WBA00000000FAKE02-anthropic.json"),
+        to: conversations.appending(path: "WBA00000000FAKE02.json"))
+    #expect(store.load(vin: "WBA00000000FAKE02", provider: .anthropic) != nil)
+
+    try store.deleteAll(provider: .openai)
+    #expect(cars.allSatisfy { store.load(vin: $0, provider: .openai) == nil })
+    #expect(cars.allSatisfy { store.load(vin: $0, provider: .anthropic) != nil })
+    #expect(store.load(vin: "WBA00000000FAKE02", provider: .anthropic) != nil)
+
+    try save(cars[0], .openai)
+    try store.deleteAll(provider: .anthropic)
+    #expect(cars.allSatisfy { store.load(vin: $0, provider: .anthropic) == nil })
+    #expect(store.load(vin: "WBA00000000FAKE02", provider: .anthropic) == nil)
+    #expect(store.load(vin: cars[0], provider: .openai) != nil)
 }
 @Test func deleteRemovesOnlyThatCarsConversation() throws {
     let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)

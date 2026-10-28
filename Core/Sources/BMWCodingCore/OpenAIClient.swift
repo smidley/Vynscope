@@ -18,7 +18,8 @@ public struct OpenAIRequest: Equatable, Sendable {
 }
 
 /// Talks to the Responses API on the owner's ChatGPT plan: one streamed request at a time, with retries, and the
-/// mechanic's tool loop over them. Every request and its usage goes to the log; the access token never does.
+/// mechanic's tool loop over them. Each try carries the access token its provider gives for it, so a turn that outlives
+/// one token sends the renewed one. Every request and its usage goes to the log; the access token never does.
 public final class OpenAIClient: ModelClient {
     /// Tool rounds per owner message.
     public static let roundCap = ClaudeClient.roundCap
@@ -34,23 +35,33 @@ public final class OpenAIClient: ModelClient {
     public private(set) var webSearchUnavailable: Set<String>
 
     private let transport: any Transport
-    private let headers: [String: String]
+    private let tokenProvider: @Sendable () async throws -> String
     private let log: Log
     private let sleep: (Duration) async throws -> Void
 
-    /// `webSearchUnavailable` is the models already known to refuse web search, which the app carries from one client
-    /// to the next.
+    /// `tokenProvider` gives the access token for each try, a retry's included; what it throws goes to the caller as
+    /// it is. `webSearchUnavailable` is the models already known to refuse web search, which the app carries from one
+    /// client to the next.
     public init(
-        transport: any Transport, accessToken: String, log: Log, webSearchUnavailable: Set<String> = [],
+        transport: any Transport, tokenProvider: @escaping @Sendable () async throws -> String, log: Log,
+        webSearchUnavailable: Set<String> = [],
         sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.transport = transport
-        self.headers = [
-            "authorization": "Bearer \(accessToken)", "content-type": "application/json", "accept": "text/event-stream",
-        ]
+        self.tokenProvider = tokenProvider
         self.log = log
         self.webSearchUnavailable = webSearchUnavailable
         self.sleep = sleep
+    }
+
+    /// A client whose every request carries `accessToken`.
+    public convenience init(
+        transport: any Transport, accessToken: String, log: Log, webSearchUnavailable: Set<String> = [],
+        sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) {
+        self.init(
+            transport: transport, tokenProvider: { accessToken }, log: log, webSearchUnavailable: webSearchUnavailable,
+            sleep: sleep)
     }
 
     /// The body for `request`: streamed and not stored, its reasoning returned encrypted so that it can go back with
@@ -85,7 +96,7 @@ public final class OpenAIClient: ModelClient {
     /// limit throws `.planLimit` at once and a 401 `.unauthorized`; any other status the API refuses with, and a
     /// failure still there at the third try, throw `.api`, or `.planLimit` when the code is one of the plan's two. A
     /// stream that ends before `response.completed`, or a connection lost, throws `.network` and is not tried again.
-    /// Each is logged as thrown.
+    /// Each is logged as thrown. What the token provider throws reaches the caller as it is, unlogged.
     public func send(_ request: OpenAIRequest, onUpdate: (StreamUpdate) -> Void) async throws -> ResponsesMessage {
         let error: OpenAIError
         do {
@@ -106,7 +117,8 @@ public final class OpenAIClient: ModelClient {
         throw error
     }
 
-    /// `send` without the note of the error it throws: the tries and the waits between them.
+    /// `send` without the note of the error it throws: the tries and the waits between them, each try with the token
+    /// the provider gives for it.
     private func sendWithRetries(
         _ request: OpenAIRequest, onUpdate: (StreamUpdate) -> Void
     ) async throws -> ResponsesMessage {
@@ -115,6 +127,10 @@ public final class OpenAIClient: ModelClient {
         var tries = 0
         while true {
             tries += 1
+            let headers = [
+                "authorization": "Bearer \(try await tokenProvider())", "content-type": "application/json",
+                "accept": "text/event-stream",
+            ]
             log.note(
                 "ai: request \(request.model) effort \(request.effort), \(request.input.count) items, \(tools) tools")
             let response = try await transport.post(body: body, headers: headers)
