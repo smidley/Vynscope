@@ -293,6 +293,8 @@ final class AIFlow {
         } catch let failure as SignInError {
             switch failure {
             case .denied: error = "Sign-in was cancelled in the browser"
+            case .callbackError(let code, let description):
+                error = "The sign-in failed (\(code)\(description.map { ": \($0)" } ?? "")). Try again."
             case .planNotGranted: chatGPT = session.account  // kept, without plan usage, as the row then says
             case .differentAccount: error = "That is a different ChatGPT account. Sign out first."
             case .stateMismatch, .clientMismatch, .registrationIncomplete, .missingCode, .signedOut:
