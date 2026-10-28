@@ -26,9 +26,8 @@ func literalJSON(_ text: String) -> String { String(decoding: JSON.string(text).
     #expect(body["reasoning"]?["effort"]?.string == "medium")
     #expect(body["include"] == .array([.string("reasoning.encrypted_content")]))
     #expect(body["input"]?.array?.count == 1 && body["input"]?.array?[0]["role"]?.string == "user")
-    for key in ["max_output_tokens", "temperature", "top_p", "truncation", "metadata", "user", "safety_identifier", "previous_response_id", "tool_choice", "prompt_cache_retention", "background", "conversation", "max_tool_calls"] {
-        #expect(body[key] == nil, "\(key) must be omitted")
-    }
+    // These keys and no other: every field the Sign in with ChatGPT rules forbid is left out.
+    #expect(body.object?.keys.sorted() == ["include", "input", "instructions", "model", "reasoning", "store", "stream", "tools"])
     let tools = try #require(body["tools"]?.array)
     #expect(tools.count == 2)
     #expect(tools[0]["type"]?.string == "namespace" && tools[0]["name"]?.string == "car")
@@ -40,6 +39,7 @@ func literalJSON(_ text: String) -> String { String(decoding: JSON.string(text).
     #expect(OpenAIClient.body(for: openAIRequest(web: false))["tools"]?.array?.count == 1)
     var capped = openAIRequest(); capped.toolChoiceNone = true
     #expect(OpenAIClient.body(for: capped)["tool_choice"]?.string == "none")
+    #expect(OpenAIClient.body(for: capped).object?.keys.sorted() == ["include", "input", "instructions", "model", "reasoning", "store", "stream", "tool_choice", "tools"])
 }
 
 @Test func retriesServerErrorsAndStopsAtThePlanLimit() async throws {
@@ -96,8 +96,9 @@ func literalJSON(_ text: String) -> String { String(decoding: JSON.string(text).
     let client = OpenAIClient(transport: transport, accessToken: "eyJ-secret-token", log: log)
     await #expect(throws: OpenAIError.unauthorized) { try await client.send(openAIRequest()) { _ in } }
     #expect(transport.calls.count == 1)
-    #expect(log.entries.contains { $0.text == "ai: error 401 invalid_token: The token is invalid" })
-    #expect(!log.entries.contains { $0.text.contains("eyJ-secret-token") })
+    // By its code only: OpenAI's message may describe the token.
+    #expect(log.entries.contains { $0.text == "ai: error 401 invalid_token" })
+    #expect(!log.entries.contains { $0.text.contains("eyJ-secret-token") || $0.text.contains("The token is invalid") })
 }
 
 @Test func theToolLoopRunsCallsAndKeepsEveryItem() async throws {
@@ -238,4 +239,61 @@ private struct NoToken: Error {}
     }
     #expect(ran == 1 && transport.calls.count == 1 && items == [ownerItem("q")])
     #expect(!log.entries.contains { $0.text.hasPrefix("ai: error") || $0.text.hasPrefix("ai: network") })
+}
+
+@Test func aRoundCapAnswerThatStillCallsAFunctionLeavesNoCallWithoutItsOutput() async throws {
+    var script: [(status: Int, headers: [String: String], text: String)] = []
+    for round in 0...OpenAIClient.roundCap { script.append((200, [:], responsesStream([functionCallItem(0, callId: "c\(round)", name: "get_vehicle", arguments: "{}")]))) }
+    // The answer asked for without tools: reasoning, its text, then a call all the same.
+    script.append((200, [:], responsesStream([reasoningItem(0), textItem(1, "Here is what I have"), functionCallItem(2, callId: "stray", name: "get_vehicle", arguments: "{}")])))
+    let transport = FakeTransport(script)
+    var items = [ownerItem("q")]
+    let turn = try await OpenAIClient(transport: transport, accessToken: "t", log: Log()).run(messages: &items, system: [], tools: Mechanic.tools, model: "m", effort: "low",
+        runTool: { _ in ToolResult("{}") }, onUpdate: { _ in }, onUsage: { _ in })
+    let called = items.filter { $0["type"]?.string == "function_call" }.compactMap { $0["call_id"]?.string }
+    let answered = items.filter { $0["type"]?.string == "function_call_output" }.compactMap { $0["call_id"]?.string }
+    #expect(turn.stoppedAtRoundCap && Set(called) == Set(answered) && !called.contains("stray"))
+    #expect(items.last?["type"]?.string == "message" && items.last?["content"]?.array?.first?["text"]?.string == "Here is what I have")
+}
+
+@Test func aRefusalKeepsOnlyItsMessageAndRunsNothing() async throws {
+    let transport = FakeTransport([(200, [:], responsesStream([refusalItem(0, "I can't help with that"), functionCallItem(1, callId: "c", name: "get_vehicle", arguments: "{}")]))])
+    var items = [ownerItem("q")], ran = false
+    let turn = try await OpenAIClient(transport: transport, accessToken: "t", log: Log()).run(messages: &items, system: [], tools: Mechanic.tools, model: "m", effort: "low",
+        runTool: { _ in ran = true; return ToolResult("") }, onUpdate: { _ in }, onUsage: { _ in })
+    #expect(!ran && turn.refused && !turn.truncated && transport.calls.count == 1)
+    #expect(items.count == 2 && items[1]["type"]?.string == "message" && items[1]["content"]?.array?.first?["type"]?.string == "refusal")
+}
+
+/// A transport whose connection is lost, as `URLSessionTransport` reports it.
+private final class OfflineTransport: Transport {
+    func post(body: Data, headers: [String: String]) async throws -> TransportResponse {
+        throw ClaudeError.network("The Internet connection appears to be offline.")
+    }
+}
+
+@Test func aLostConnectionIsANetworkErrorWithTheSystemsText() async throws {
+    let log = Log()
+    let client = OpenAIClient(transport: OfflineTransport(), accessToken: "t", log: log)
+    await #expect(throws: OpenAIError.network("The Internet connection appears to be offline.")) { try await client.send(openAIRequest()) { _ in } }
+    #expect(log.entries.last?.text == "ai: network error: The Internet connection appears to be offline.")
+}
+
+@Test func anErrorBodyWithoutACodeGivesItsTypeAndOneThatIsNotJSONItsStatus() async throws {
+    let typed = FakeTransport([(400, [:], #"{"error":{"type":"invalid_request_error","code":null,"message":"Unknown parameter: 'foo'.","param":"foo"}}"#)])
+    await #expect(throws: OpenAIError.api(status: 400, code: "invalid_request_error", message: "Unknown parameter: 'foo'.", param: "foo")) {
+        try await OpenAIClient(transport: typed, accessToken: "t", log: Log()).send(openAIRequest()) { _ in }
+    }
+    let page = "<html><body>" + String(repeating: "Not found. ", count: 30) + "</body></html>"
+    let untyped = FakeTransport([(404, [:], page)])
+    await #expect(throws: OpenAIError.api(status: 404, code: "http_404", message: String(page.prefix(200)), param: nil)) {
+        try await OpenAIClient(transport: untyped, accessToken: "t", log: Log()).send(openAIRequest()) { _ in }
+    }
+}
+
+@Test func aRetryAfterOfMoreThanThirtySecondsWaitsThirty() async throws {
+    var waits: [Duration] = []
+    let transport = FakeTransport([(429, ["retry-after": "90"], errorBody("rate_limit_exceeded", "Slow down")), (200, [:], responsesStream([textItem(0, "ok")]))])
+    _ = try await OpenAIClient(transport: transport, accessToken: "t", log: Log()) { waits.append($0) }.send(openAIRequest()) { _ in }
+    #expect(waits == [.seconds(30)] && transport.calls.count == 2)
 }

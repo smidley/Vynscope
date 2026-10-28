@@ -367,9 +367,9 @@ public final class ChatGPTSession {
     }
 
     /// A new access token for one the API refused before its expiry: the refresh `validAccessToken` runs for an
-    /// expiring token, run now, through the one in flight, with the same outcomes: `SignInError.signedOut` when it fails
-    /// terminally (the account is then dropped, the registration kept) or a sign-out is under way, `.network` with the
-    /// account kept when it fails in passing.
+    /// expiring token, run now, through the one in flight, with the same outcomes: `SignInError.signedOut` when it
+    /// fails terminally (the account is then dropped, the registration kept) or a sign-out is under way, `.network`
+    /// with the account kept when it fails in passing.
     public func renew() async throws -> String {
         try await freshAccount(renewing: true).accessToken
     }
@@ -400,9 +400,6 @@ public final class ChatGPTSession {
         return result
     }
 
-    /// Drops the account without revoking it (the API said the token is no longer valid); the registration stays.
-    public func forget() { store.account = nil }
-
     /// The account, refreshed first when its token expires within 60 s or `renewing` asks, through the one refresh in
     /// flight.
     private func freshAccount(renewing: Bool = false) async throws -> ChatGPTAccount {
@@ -419,8 +416,8 @@ public final class ChatGPTSession {
     private func refresh(_ account: ChatGPTAccount) async throws -> ChatGPTAccount {
         let reply = try await send(
             ChatGPTSignIn.refreshRequest(refreshToken: account.refreshToken, clientID: account.clientID))
-        // A sign-in, a sign-out or `forget` replaced or dropped the account meanwhile: this answer is about tokens no
-        // longer kept, and none of it is written.
+        // A sign-in replaced the account meanwhile, or it is gone: this answer is about tokens no longer kept, and
+        // none of it is written.
         guard store.account?.refreshToken == account.refreshToken else { throw SignInError.signedOut }
         if (200..<300).contains(reply.status), let tokens = try? TokenResponse.parse(reply.body) {
             // The access token, its expiry, the grant and the rotated refresh token are replaced together.

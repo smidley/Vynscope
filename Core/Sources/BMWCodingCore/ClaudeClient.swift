@@ -240,9 +240,10 @@ public final class ClaudeClient: ModelClient {
 
     /// Runs one owner message, which `messages` already ends with, to its answer: sends, runs the tools the model
     /// calls through `runTool` and sends their results, and resends a `pause_turn` as it stands, for up to
-    /// `roundCap` rounds. `onUsage` is told the usage of each request as it completes, so a turn that throws later
-    /// has still reported what it used. `messages` takes every message of the turn only when it returns: when `send`
-    /// or `runTool` throws, it is left as it was, so it never holds a tool call without its result.
+    /// `roundCap` rounds; the round cap's answer, like a refusal and an answer a limit cut off, goes back as its text
+    /// and answered web lookups only. `onUsage` is told the usage of each request as it completes, so a turn that
+    /// throws later has still reported what it used. `messages` takes every message of the turn only when it returns:
+    /// when `send` or `runTool` throws, it is left as it was, so it never holds a tool call without its result.
     public func run(
         messages: inout [JSON], system: [JSON], tools: [JSON], model: String, effort: String,
         runTool: (ToolCall) async throws -> ToolResult, onUpdate: (StreamUpdate) -> Void,
@@ -262,12 +263,12 @@ public final class ClaudeClient: ModelClient {
             if followUp, message.usage.cacheReadInputTokens == 0 { log.note("ai: no cache read on this request") }
             // The rest works from the content as it is sent back, so a call abandoned at a fallback never runs.
             let content = Self.echo(message.content)
-            // A refusal, or an answer a limit cut off, goes back as its text and the answered web lookups its
-            // citations point to, and none of its calls runs: a half-made tool call or thinking block must never be
-            // sent back.
+            // A refusal, an answer a limit cut off, and the round cap's answer go back as their text and the answered
+            // web lookups its citations point to, and none of their calls runs: a half-made tool call or thinking
+            // block, or a call no result would answer, must never be sent back.
             let truncated = ["max_tokens", "model_context_window_exceeded"].contains(message.stopReason)
             let cut = truncated || message.stopReason == "refusal"
-            let answer = cut ? Self.textAndAnsweredLookups(content[...], in: content) : content
+            let answer = cut || toolChoiceNone ? Self.textAndAnsweredLookups(content[...], in: content) : content
             if !answer.isEmpty { conversation.append(Self.message("assistant", answer)) }
             if cut || toolChoiceNone {
                 turn.refused = message.stopReason == "refusal"

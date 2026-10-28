@@ -239,7 +239,7 @@ func heldAccount(subject: String = "sub", scopes: [String] = [ChatGPT.planScope]
     transport.hold = true
     let refreshing = Task { try await session.validAccessToken() }
     for _ in 0..<100 where transport.requests.isEmpty { await Task.yield() }
-    session.forget()
+    store.account = nil  // the record is gone meanwhile
     transport.release()
     await #expect(throws: SignInError.signedOut) { try await refreshing.value }
     #expect(transport.requests.count == 1 && store.account == nil)

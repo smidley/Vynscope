@@ -113,6 +113,18 @@ func textItem(_ index: Int, _ text: String, citations: [(url: String, title: Str
     return ResponsesItemFixture(events: events.joined(), json: item)
 }
 
+/// An assistant message item whose one part is a `refusal` saying `text`.
+func refusalItem(_ index: Int, _ text: String) -> ResponsesItemFixture {
+    let id = "msg_\(index)"
+    let item = #"{"id":"\#(id)","type":"message","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":\#(literal(text))}]}"#
+    let events = [
+        event("response.output_item.added", #"{"type":"response.output_item.added","sequence_number":1,"output_index":\#(index),"item":{"id":"\#(id)","type":"message","role":"assistant","status":"in_progress","content":[]}}"#),
+        event("response.refusal.delta", #"{"type":"response.refusal.delta","sequence_number":2,"item_id":"\#(id)","output_index":\#(index),"content_index":0,"delta":\#(literal(text))}"#),
+        event("response.output_item.done", #"{"type":"response.output_item.done","sequence_number":3,"output_index":\#(index),"item":\#(item)}"#),
+    ]
+    return ResponsesItemFixture(events: events.joined(), json: item)
+}
+
 /// A function call item of the `car` namespace whose arguments arrive as the JSON text `arguments`.
 func functionCallItem(_ index: Int, callId: String, name: String, arguments: String) -> ResponsesItemFixture {
     let id = "fc_\(index)"

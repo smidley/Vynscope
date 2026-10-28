@@ -29,6 +29,11 @@ public enum OpenAIError: Error, Equatable {
     case badToolInput(String)
     /// The request got no answer, or the answer broke off: what the system says went wrong.
     case network(String)
+
+    /// The codes of `.planLimit`, wherever the API gives them: an error body, `response.failed` or an `error` event.
+    public static let planLimitCodes: Set<String> = [
+        "subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable",
+    ]
 }
 
 /// Puts the events of one Responses stream together into the response they describe, item by item.
@@ -52,8 +57,9 @@ public struct ResponsesAssembler {
     /// `response.incomplete`, which carry the whole output and the usage, `.finished`; any other event returns `nil`,
     /// an event this does not know among them. A function call whose arguments are not a JSON object reads as
     /// `{}`, and `response.completed` then throws `OpenAIError.badToolInput` with the first such text;
-    /// `response.incomplete` does not, its limit cut that text off. `response.failed` throws `.planLimit` for the
-    /// plan's two codes, with the usage it carries, and `.api(status: nil, ...)` for any other, as an `error` does.
+    /// `response.incomplete` does not, its limit cut that text off. `response.failed` and an `error` throw `.planLimit`
+    /// for the plan's codes (`OpenAIError.planLimitCodes`), with the usage `response.failed` carries and none from an
+    /// `error`, and `.api(status: nil, ...)` for any other.
     public mutating func apply(_ event: SSEEvent) throws -> StreamUpdate? {
         // ponytail: data that is not JSON reads as nothing, as in `StreamAssembler`.
         let body = (try? JSON.parse(Data(event.data.utf8))) ?? .null
@@ -82,14 +88,16 @@ public struct ResponsesAssembler {
         case "response.failed":
             let response = body["response"], error = response?["error"]
             let code = error?["code"]?.string ?? "error", message = error?["message"]?.string ?? ""
-            if ["subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable"].contains(code) {
+            if OpenAIError.planLimitCodes.contains(code) {
                 throw OpenAIError.planLimit(code: code, message: message, usage: Usage(response?["usage"] ?? .null))
             }
             throw OpenAIError.api(status: nil, code: code, message: message, param: nil)
         case "error":
-            throw OpenAIError.api(
-                status: nil, code: body["code"]?.string ?? "error", message: body["message"]?.string ?? event.data,
-                param: body["param"]?.string)
+            let code = body["code"]?.string ?? "error", message = body["message"]?.string ?? event.data
+            if OpenAIError.planLimitCodes.contains(code) {
+                throw OpenAIError.planLimit(code: code, message: message, usage: .zero)
+            }
+            throw OpenAIError.api(status: nil, code: code, message: message, param: body["param"]?.string)
         default:
             break  // created, in progress, the part, annotation, argument, search and reasoning events, and new ones
         }

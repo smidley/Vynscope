@@ -96,7 +96,8 @@ public final class OpenAIClient: ModelClient {
     /// limit throws `.planLimit` at once and a 401 `.unauthorized`; any other status the API refuses with, and a
     /// failure still there at the third try, throw `.api`, or `.planLimit` when the code is one of the plan's two. A
     /// stream that ends before `response.completed`, or a connection lost, throws `.network` and is not tried again.
-    /// Each is logged as thrown. What the token provider throws reaches the caller as it is, unlogged.
+    /// Each is logged as thrown, a 401 by its code only, since its message may describe the token. What the token
+    /// provider throws reaches the caller as it is, unlogged.
     public func send(_ request: OpenAIRequest, onUpdate: (StreamUpdate) -> Void) async throws -> ResponsesMessage {
         let error: OpenAIError
         do {
@@ -107,9 +108,11 @@ public final class OpenAIClient: ModelClient {
             error = .network(text)  // the transport's lost connection
         }
         switch error {
+        case .api(401?, let code, _, _):
+            log.note("ai: error 401 \(code)")
+            throw OpenAIError.unauthorized
         case .api(let status, let code, let message, _):
             log.note("ai: error \(status.map(String.init) ?? "-") \(code): \(message)")
-            if status == 401 { throw OpenAIError.unauthorized }
         case .planLimit(let code, let message, _): log.note("ai: plan limit \(code): \(message)")
         case .network(let message): log.note("ai: network error: \(message)")
         case .unauthorized, .badToolInput: break
@@ -177,7 +180,8 @@ public final class OpenAIClient: ModelClient {
     /// Runs one owner message, which `messages` already ends with, to its answer: sends, runs the functions the model
     /// calls through `runTool` and sends their outputs, for up to `roundCap` rounds. `messages` are Responses input
     /// items and `system` the prompt's text blocks, which become the instructions. A model that refuses web search is
-    /// asked the same round again without it, and is never asked with it again. `onUsage` is told the usage of each
+    /// asked the same round again without it, and is never asked with it again. The round cap's answer, like a
+    /// refusal and an answer a limit cut off, goes back as its message items only. `onUsage` is told the usage of each
     /// request as it completes, and the usage a plan limit carries before it is thrown. `messages` takes every item
     /// of the turn only when it returns: when `send` or `runTool` throws, it is left as it was, so it never holds a
     /// call without its output.
@@ -215,13 +219,13 @@ public final class OpenAIClient: ModelClient {
             }
             onUsage(message.usage)
             turn.usage = turn.usage + message.usage
-            // An answer a limit cut off, or a refusal, goes back as its message items only, and none of its calls
-            // runs: a half-made call must never be sent back.
+            // An answer a limit cut off, a refusal, and the round cap's answer go back as their message items only,
+            // and none of their calls runs: a half-made call, or one no output would answer, must never be sent back.
             let answer = message.output.filter { $0["type"]?.string == "message" }
             let truncated = message.status == "incomplete"
             let refused = !truncated
                 && answer.last?["content"]?.array?.contains { $0["type"]?.string == "refusal" } == true
-            conversation += truncated || refused ? answer : message.output
+            conversation += truncated || refused || toolChoiceNone ? answer : message.output
             if truncated || refused || toolChoiceNone {
                 turn.truncated = truncated
                 turn.refused = refused
@@ -274,9 +278,7 @@ public final class OpenAIClient: ModelClient {
             return .api(
                 status: response.status, code: "http_\(response.status)", message: String(text.prefix(200)), param: nil)
         }
-        if ["subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable"].contains(code) {
-            return .planLimit(code: code, message: message, usage: .zero)
-        }
+        if OpenAIError.planLimitCodes.contains(code) { return .planLimit(code: code, message: message, usage: .zero) }
         return .api(status: response.status, code: code, message: message, param: error?["param"]?.string)
     }
 }

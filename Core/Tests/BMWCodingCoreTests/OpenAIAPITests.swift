@@ -50,3 +50,9 @@ private func assemble(_ stream: String) throws -> (updates: [StreamUpdate], mess
     let cutByLimit = responsesStream([functionCallItem(0, callId: "c", name: "read_faults", arguments: #"{"module":"4"#)], end: "incomplete", incompleteReason: "max_output_tokens")
     #expect(try assemble(cutByLimit).message.output[0]["arguments"]?.string == "{}")
 }
+
+@Test func anErrorEventWithAPlanCodeIsAPlanLimit() throws {
+    let limit = "event: error\ndata: {\"type\":\"error\",\"sequence_number\":1,\"code\":\"subscription_sharing_usage_limit_exceeded\",\"message\":\"Usage limit reached\",\"param\":null}\n\n"
+    #expect(throws: OpenAIError.planLimit(code: "subscription_sharing_usage_limit_exceeded", message: "Usage limit reached", usage: .zero)) { try assemble(limit) }
+    #expect(OpenAIError.planLimitCodes == ["subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable"])
+}
