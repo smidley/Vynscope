@@ -52,10 +52,10 @@ struct ChatView: View {
             if ai.settings.provider == .openai, ai.chatGPT != nil {
                 HStack(spacing: 0) {
                     Text("Using ChatGPT plan · ")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.vynMuted)
                     Link("Manage usage", destination: ChatGPTBrowser.usagePage)
                 }
-                .font(.caption)
+                .font(.vyn(.caption))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding([.horizontal, .top])
             }
@@ -75,8 +75,8 @@ struct ChatTotal: View {
         (onPlan
             ? Text("Total on your ChatGPT plan · ^[\(turns.count) turn](inflect: true)")
             : Text("Total \(dollars(ai.totalCost)) · ^[\(turns.count) turn](inflect: true)"))
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .font(.vyn(.caption))
+            .foregroundStyle(Color.vynMuted)
             .padding(.vertical, 4)
     }
 }
@@ -100,12 +100,12 @@ struct ChatHistory: View {
                 case .activity(let line, let link): ActivityLine(line: line, link: link)
                 case .failed(let error):
                     Text("Failed: " + error)
-                        .font(.caption)
+                        .font(.vyn(.caption))
                         .foregroundStyle(.red)
                 case .notice(let text):
                     Text(text)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                        .font(.vyn(.caption))
+                        .foregroundStyle(Color.vynOrangeDark)
                 case .sources(let sources): SourceList(sources: sources)
                 case .usage(let turn, let cost): UsageLine(turn: turn, cost: cost)
                 }
@@ -240,7 +240,8 @@ struct LiveTurn: View {
     }
 }
 
-/// A message: the owner's on the right, the mechanic's on the left, with its inline markdown rendered.
+/// A message: the owner's on the right in the accent, the mechanic's on the left on paper with a line around it, with
+/// its inline markdown rendered.
 struct Bubble: View {
     let text: String
     let owner: Bool
@@ -248,9 +249,12 @@ struct Bubble: View {
     var body: some View {
         Text(.init(text))
             .textSelection(.enabled)
+            .foregroundStyle(owner ? Color.vynPaper : Color.vynInk)
             .padding(10)
-            .background(
-                owner ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.15), in: .rect(cornerRadius: 12))
+            .background(owner ? Color.vynOrange : Color.vynPaper, in: .rect(cornerRadius: 12))
+            .overlay {
+                if !owner { RoundedRectangle(cornerRadius: 12).strokeBorder(Color.vynLine, lineWidth: 1) }
+            }
             .padding(owner ? .leading : .trailing, 40)
             .frame(maxWidth: .infinity, alignment: owner ? .trailing : .leading)
     }
@@ -264,11 +268,11 @@ struct ActivityLine: View {
     var body: some View {
         if let link {
             Link(line, destination: link)
-                .font(.caption)
+                .font(.vyn(.caption))
         } else {
             Text(line)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.vyn(.caption))
+                .foregroundStyle(Color.vynMuted)
         }
     }
 }
@@ -288,7 +292,7 @@ struct SourceList: View {
                 }
             }
         }
-        .font(.caption)
+        .font(.vyn(.caption))
     }
 }
 
@@ -317,13 +321,13 @@ struct UsageLine: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(counts)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.vynMuted)
             ForEach(endings, id: \.self) { ending in
                 Text(ending)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.vynOrangeDark)
             }
         }
-        .font(.caption)
+        .font(.vyn(.caption))
     }
 
     /// `1200 in · 340 out · 5000 cached · $0.0149 · 2 searches` on Anthropic, `1200 in · 340 out · 120 reasoning ·

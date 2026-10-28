@@ -38,11 +38,15 @@ struct BackupStep: View {
                     One file per run, in Backups inside the chosen folder (Documents › Vynscope until one is \
                     chosen). Full rescan reads every identifier again.
                     """)
+                    .font(.vyn(.footnote))
+                    .foregroundStyle(Color.vynMuted)
                 #else
                 Text("""
                     One file per run, in Files: On My iPhone › Vynscope › Backups. Full rescan reads every \
                     identifier again.
                     """)
+                    .font(.vyn(.footnote))
+                    .foregroundStyle(Color.vynMuted)
                 #endif
             }
             if running, let progress = flow.progress {
@@ -64,12 +68,14 @@ struct BackupStep: View {
             if let url = flow.lastBackup {
                 Section("Saved") {
                     Text(url.path)
-                        .font(.caption)
+                        .font(.vyn(.caption))
                         .textSelection(.enabled)
                 }
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.vynIvory)
         .task(id: flow.lastBackup) {
             saved = flow.lastBackup == nil ? nil : flow.latestBackup()
             firstBackup = flow.isFirstBackup()
@@ -109,11 +115,11 @@ struct BackupRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text(title).monospaced()
+                Text(title).font(.vynMono(.body))
                 Spacer()
                 switch state {
                 case .waiting?:
-                    Text("waiting").foregroundStyle(.secondary)
+                    Text("waiting").foregroundStyle(Color.vynMuted)
                 case .reading?:
                     Text("reading…")
                 case .done(let identifiers, let bytes)?:
@@ -126,10 +132,10 @@ struct BackupRow: View {
                 }
             }
             if case .failed(let why)? = state {
-                Text(why).font(.caption).foregroundStyle(.red)
+                Text(why).font(.vyn(.caption)).foregroundStyle(.red)
             }
             if case .partial(let reason)? = status {
-                Text("Partial: \(reason)").font(.caption).foregroundStyle(.orange)
+                Text("Partial: \(reason)").font(.vyn(.caption)).foregroundStyle(Color.vynOrangeDark)
             }
         }
     }

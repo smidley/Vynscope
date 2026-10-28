@@ -7,7 +7,10 @@ struct ConnectStep: View {
     var body: some View {
         Form {
             Section {
-                LabeledContent("Adapter", value: stateText)
+                LabeledContent("Adapter") {
+                    Text(stateText)
+                        .foregroundStyle(flow.link.state == .ready ? Color.vynGreen : Color.vynMuted)
+                }
                 if let adapter = flow.adapter {
                     LabeledContent("Model", value: flow.link.deviceModel ?? "not reported")
                     LabeledContent("Firmware", value: flow.link.deviceFirmware ?? "not reported")
@@ -28,9 +31,13 @@ struct ConnectStep: View {
                     PIN. Next time the app reconnects to the last adapter by itself; Forget adapter makes it scan \
                     for one instead.
                     """)
+                    .font(.vyn(.footnote))
+                    .foregroundStyle(Color.vynMuted)
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.vynIvory)
         .task {
             if flow.adapter == nil, UserDefaults.standard.string(forKey: Flow.adapterKey) != nil {
                 await flow.connect()

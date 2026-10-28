@@ -9,7 +9,7 @@ struct ModulesStep: View {
         List {
             if flow.discovering {
                 Text("Scanning · \(flow.modules.count) answered so far")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.vynMuted)
             } else if flow.modules.isEmpty {
                 Button("Scan") { Task { await flow.discover() } }
             }
@@ -19,6 +19,8 @@ struct ModulesStep: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(Color.vynIvory)
         .navigationDestination(for: DiscoveredModule.self) { ModuleDetailView(module: $0) }
         .task {
             if flow.modules.isEmpty, !flow.discovering { await flow.discover() }
@@ -35,17 +37,17 @@ struct ModuleRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading) {
-                Text(title).monospaced()
+                Text(title).font(.vynMono(.body))
                 if let description {
                     Text(description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.vyn(.caption))
+                        .foregroundStyle(Color.vynMuted)
                 }
             }
             Spacer()
             if signed {
                 Text("signed")
-                    .font(.caption)
+                    .font(.vyn(.caption))
                     .padding(.horizontal, 6)
                     .background(.quaternary, in: .capsule)
             }
