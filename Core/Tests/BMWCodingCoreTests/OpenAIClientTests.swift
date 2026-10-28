@@ -52,12 +52,42 @@ func literalJSON(_ text: String) -> String { String(decoding: JSON.string(text).
     let message = try await client.send(openAIRequest()) { _ in }
     #expect(message.output.count == 1 && transport.calls.count == 3 && waits == [.seconds(1), .seconds(2)])
 
+    var uncheckedWaits: [Duration] = []
+    let unavailable = (503, [String: String](), errorBody("subscription_sharing_usage_unavailable", "later"))
+    let unchecked = FakeTransport([unavailable, unavailable, unavailable])
+    let uncheckedClient = OpenAIClient(transport: unchecked, accessToken: "t", log: Log()) { uncheckedWaits.append($0) }
+    await #expect(throws: OpenAIError.planLimit(code: "subscription_sharing_usage_unavailable", message: "later", usage: .zero)) {
+        try await uncheckedClient.send(openAIRequest()) { _ in }
+    }
+    #expect(unchecked.calls.count == 3 && uncheckedWaits == [.seconds(1), .seconds(2)])
+
     let limited = FakeTransport([(429, ["retry-after": "20"], errorBody("subscription_sharing_usage_limit_exceeded", "Usage limit reached"))])
     let limitedClient = OpenAIClient(transport: limited, accessToken: "t", log: Log())
     await #expect(throws: OpenAIError.planLimit(code: "subscription_sharing_usage_limit_exceeded", message: "Usage limit reached", usage: .zero)) {
         try await limitedClient.send(openAIRequest()) { _ in }
     }
     #expect(limited.calls.count == 1)
+}
+
+@Test func aUsageCheckFailingMidStreamIsRetriedOnlyBeforeAnyOutput() async throws {
+    var waits: [Duration] = []
+    let early = FakeTransport([
+        (200, [:], responsesFailure([], code: "subscription_sharing_usage_unavailable", message: "later")),
+        (200, [:], responsesStream([textItem(0, "ok")])),
+    ])
+    let message = try await OpenAIClient(transport: early, accessToken: "t", log: Log()) { waits.append($0) }.send(openAIRequest()) { _ in }
+    #expect(message.status == "completed" && early.calls.count == 2 && waits == [.seconds(1)])
+
+    // A second answer is scripted so that a retry fails the expectations instead of trapping in FakeTransport.
+    let late = FakeTransport([
+        (200, [:], responsesFailure([textItem(0, "Looking")], code: "subscription_sharing_usage_unavailable", message: "later")),
+        (200, [:], responsesStream([textItem(0, "ok")])),
+    ])
+    let lateClient = OpenAIClient(transport: late, accessToken: "t", log: Log()) { _ in }
+    await #expect(throws: OpenAIError.planLimit(code: "subscription_sharing_usage_unavailable", message: "later", usage: Usage(inputTokens: 100, outputTokens: 5, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, webSearchRequests: 0, webFetchRequests: 0, reasoningTokens: 0))) {
+        try await lateClient.send(openAIRequest()) { _ in }
+    }
+    #expect(late.calls.count == 1)
 }
 
 @Test func unauthorizedIsNotRetriedAndTheTokenIsNeverLogged() async throws {

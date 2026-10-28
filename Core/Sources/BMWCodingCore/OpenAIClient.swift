@@ -78,11 +78,12 @@ public final class OpenAIClient {
     }
 
     /// Sends `request` and streams the answer, giving `onUpdate` each update. Three tries in all: a 429, 500, 502 or
-    /// 503, and a plan whose usage could not be checked (`subscription_sharing_usage_unavailable` in the stream), are
-    /// tried again after 1 s and then 2 s (a 429's integer `retry-after` instead, at most 30 s). A 429 for the plan's
-    /// usage limit throws `.planLimit` at once and a 401 `.unauthorized`; any other status the API refuses with, and
-    /// a failure still there at the third try, throw `.api` or `.planLimit`. A stream that ends before
-    /// `response.completed`, or a connection lost, throws `.network` and is not tried again. Each is logged as thrown.
+    /// 503, and a stream that fails for `subscription_sharing_usage_unavailable` before any output item, are tried
+    /// again after 1 s and then 2 s (a 429's integer `retry-after` instead, at most 30 s). A 429 for the plan's usage
+    /// limit throws `.planLimit` at once and a 401 `.unauthorized`; any other status the API refuses with, and a
+    /// failure still there at the third try, throw `.api`, or `.planLimit` when the code is one of the plan's two. A
+    /// stream that ends before `response.completed`, or a connection lost, throws `.network` and is not tried again.
+    /// Each is logged as thrown.
     public func send(_ request: OpenAIRequest, onUpdate: (StreamUpdate) -> Void) async throws -> ResponsesMessage {
         let error: OpenAIError
         do {
@@ -134,12 +135,17 @@ public final class OpenAIClient {
                             + "out \(usage.outputTokens) · reasoning \(usage.reasoningTokens) · "
                             + "searches \(usage.webSearchRequests)")
                     return message
-                } catch OpenAIError.planLimit("subscription_sharing_usage_unavailable", _, _) where tries < 3 {
-                    reason = "subscription_sharing_usage_unavailable"
+                } catch OpenAIError.planLimit("subscription_sharing_usage_unavailable", _, _)
+                    where tries < 3 && assembler.message().output.isEmpty {
+                    reason = "subscription_sharing_usage_unavailable"  // nothing of the answer was shown yet
                 }
             } else {
                 let error = try await Self.apiError(response)
-                guard [429, 500, 502, 503].contains(response.status), case .api = error, tries < 3 else { throw error }
+                // The plan's usage limit is not a rate limit: asking again would only meet it again.
+                if response.status == 429, case .planLimit("subscription_sharing_usage_limit_exceeded", _, _) = error {
+                    throw error
+                }
+                guard [429, 500, 502, 503].contains(response.status), tries < 3 else { throw error }
                 if response.status == 429, let seconds = response.headers["retry-after"].flatMap({ UInt($0) }) {
                     delay = .seconds(min(seconds, 30))
                 }
@@ -239,7 +245,7 @@ public final class OpenAIClient {
 
     /// The error a response that is not 2xx carries: the code (its type when the code is null), message and param of
     /// its `{"error": {...}}` body, or `http_<status>` and the body's first 200 characters when the body is not that.
-    /// A 429 for the plan's usage limit is `.planLimit`, without usage.
+    /// Either of the plan's codes, at any status, is `.planLimit`, without usage: the app has one shape to match.
     private static func apiError(_ response: TransportResponse) async throws -> OpenAIError {
         var lines: [String] = []
         for try await line in response.lines { lines.append(line) }
@@ -250,7 +256,7 @@ public final class OpenAIClient {
             return .api(
                 status: response.status, code: "http_\(response.status)", message: String(text.prefix(200)), param: nil)
         }
-        if response.status == 429, code == "subscription_sharing_usage_limit_exceeded" {
+        if ["subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable"].contains(code) {
             return .planLimit(code: code, message: message, usage: .zero)
         }
         return .api(status: response.status, code: code, message: message, param: error?["param"]?.string)
