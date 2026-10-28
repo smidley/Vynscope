@@ -44,6 +44,17 @@ public extension ELM {
         "ATE0", "ATL0", "ATS1", "ATH1", "ATAT0", "ATST 32", "ATSP6", "ATCAF0", "ATCFC1",
         "ATSH 6F1", "ATFCSH 6F1", "ATFCSD 00 30 00 00", "ATFCSM 1",
     ]
+
+    /// Standard OBD-II addressing, sent by `Diag.obd` when the adapter is set up for BMW's; every command must
+    /// answer `OK`. Auto-formatting on and its automatic flow-control mode (the adapter builds the ISO-TP frames
+    /// and sends the flow control itself), every reply id accepted again, and the functional request header
+    /// `7DF`, which every controller listens to. First guess, to be confirmed on the car.
+    static let obdSequence = ["ATCAF1", "ATFCSM 0", "ATAR", "ATSH 7DF"]
+
+    /// The way back from `obdSequence` (also a first guess), sent by `Diag.select`; every command must answer
+    /// `OK`. Auto-formatting off, the user-defined flow control, and tester header `6F1` for requests and flow
+    /// control again.
+    static let bmwSequence = ["ATCAF0", "ATFCSM 1", "ATSH 6F1", "ATFCSH 6F1"]
 }
 
 /// Who the adapter says it is: `STDI` (the device), `STI` (its firmware) and `ATI` (the ELM327 it emulates).

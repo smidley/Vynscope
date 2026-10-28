@@ -8,11 +8,22 @@ public enum UDSResult: Equatable, Sendable {
     case noResponse
 }
 
-/// Adapter setup and UDS requests to one module at a time. The adapter is a single serial channel, so
-/// callers make one call at a time; overlapping calls would mix up their replies.
+/// How the adapter addresses the car: BMW's way, one module at a time (`ELM.initSequence`), or standard
+/// OBD-II to every controller at once (`ELM.obdSequence`).
+public enum Addressing: Equatable, Sendable {
+    case bmw, obd
+}
+
+/// Adapter setup, UDS requests to one module at a time and standard OBD-II requests to every controller at
+/// once. The adapter is a single serial channel, so callers make one call at a time; overlapping calls would
+/// mix up their replies.
 public final class Diag {
     /// How long the adapter may take over one vehicle request.
     public var readTimeout: Duration = .milliseconds(1500)
+    /// The addressing the adapter is set up for: `.bmw` after `setUp()`, `.obd` once `obd(_:)` has switched
+    /// it, `.bmw` again once `select(module:)` has switched back. It changes only after every command of a
+    /// switch answered `OK`.
+    public private(set) var addressing: Addressing = .bmw
     private let link: CommandLink
     private let log: Log
     /// The module the adapter's receive filter and flow-control address are set for, when known.
@@ -23,11 +34,12 @@ public final class Diag {
         self.log = log
     }
 
-    /// Resets the adapter, applies `ELM.initSequence` and reads its identity. Throws
+    /// Resets the adapter, applies `ELM.initSequence` (BMW addressing) and reads its identity. Throws
     /// `LinkError.adapterError("<command>: <answer>")` for the first setup command that does not answer `OK`.
     public func setUp() async throws -> AdapterInfo {
         selected = nil  // the reset wipes the adapter's filter
         _ = try await send("ATZ", timeout: .seconds(3))
+        addressing = .bmw  // the reset dropped any OBD setup; the sequence below is BMW's
         for command in ELM.initSequence { try await expectOK(command) }
         let elmVersion = try await identity("ATI")
         let firmware = try await identity("STI")
@@ -36,8 +48,14 @@ public final class Diag {
     }
 
     /// Points the adapter at `module`: it passes on only that module's frames and sends its flow control
-    /// to it. Does nothing when `module` is already the selected one.
+    /// to it. Does nothing when `module` is already the selected one. After `obd(_:)` it first sets BMW
+    /// addressing up again (every command must answer `OK`), which leaves no module selected.
     public func select(module: UInt8) async throws {
+        if addressing == .obd {
+            for command in ELM.bmwSequence { try await expectOK(command) }
+            addressing = .bmw
+            selected = nil  // `ATAR` dropped the filter, so even the module selected before must be set again
+        }
         guard module != selected else { return }
         selected = nil  // the adapter's state is unknown until both commands are acknowledged
         try await expectOK("ATCRA \(String(responseID(module), radix: 16, uppercase: true))")
@@ -71,6 +89,13 @@ public final class Diag {
         return .positive(Array(payload.dropFirst(3)))
     }
 
+    /// Reads the stored faults of `module` (service `0x19`, sub-function `0x02`, status mask `0xFF`: every
+    /// fault, whatever its status). A positive is the whole answer, starting `59 02`. The caller selects the
+    /// module first, as for `readDID`.
+    public func readFaults(_ module: UInt8) async throws -> UDSResult {
+        try await request(module, [0x19, 0x02, 0xFF])
+    }
+
     /// Sends TesterPresent (`0x3E`); true when the module confirms it.
     public func testerPresent(_ module: UInt8) async throws -> Bool {
         try await request(module, [0x3E, 0x00]) == .positive([0x7E, 0x00])
@@ -80,6 +105,40 @@ public final class Diag {
     public func enterExtendedSession(_ module: UInt8) async throws -> Bool {
         guard case .positive(let payload) = try await request(module, [0x10, 0x03]) else { return false }
         return payload.starts(with: [0x50, 0x03])
+    }
+
+    /// Sends one standard OBD-II request to every controller at once and returns each one's complete answer by
+    /// the CAN id it came on (`0x7E8...0x7EF`). The adapter must be set up; it is switched to OBD addressing
+    /// first when it is not there (every command must answer `OK`). An id whose message did not finish, or that
+    /// answered negatively, is left out and noted; `NO DATA` gives an empty dictionary. Throws
+    /// `LinkError.adapterError` as soon as the adapter prints an error line.
+    public func obd(_ payload: [UInt8]) async throws -> [UInt16: [UInt8]] {
+        if addressing != .obd {
+            for command in ELM.obdSequence { try await expectOK(command) }
+            addressing = .obd
+        }
+        // ponytail: no wait and re-ask on 0x78 (response pending) as in `request(_:_:)`; a controller still
+        // pending is left out like any negative answer. Add the re-ask if one turns up.
+        var frames: [UInt16: [[UInt8]]] = [:]  // by CAN id, in the order received
+        for line in try await send(ISOTP.hexLine(payload), timeout: readTimeout) {
+            switch ELM.parse(line) {
+            case .frame(let id, let data) where (0x7E8...0x7EF).contains(id) && !data.isEmpty:
+                frames[id, default: []].append([0x00] + data)  // `reassemble` expects an address byte first
+            case .error(let text): throw LinkError.adapterError(text)
+            case .frame, .text, .noData: break
+            }
+        }
+        var answers: [UInt16: [UInt8]] = [:]
+        for (id, group) in frames.sorted(by: { $0.key < $1.key }) {  // sorted, so the notes come in id order
+            switch ISOTP.reassemble(group) {
+            case .complete(let bytes) where bytes.first != 0x7F: answers[id] = bytes
+            case .complete(let bytes): leftOut(id, "negative answer \(ISOTP.hexLine(bytes))")
+            case .needFlowControl(let expected): leftOut(id, "only the first frame of \(expected) bytes arrived")
+            case .incomplete(let received, let expected): leftOut(id, "\(received) of \(expected) bytes arrived")
+            case .empty: leftOut(id, "no frame carried a message")
+            }
+        }
+        return answers
     }
 
     /// One request and its whole answer, with the flow-control round trip for a multi-frame one.
@@ -153,5 +212,10 @@ public final class Diag {
     private func noResponse(_ module: UInt8, _ why: String) -> UDSResult {
         log.note("module \(ISOTP.hexLine([module])): no response, \(why)")
         return .noResponse
+    }
+
+    /// Logs why the answer on CAN id `id` is not in an OBD result.
+    private func leftOut(_ id: UInt16, _ why: String) {
+        log.note("OBD \(String(id, radix: 16, uppercase: true)): answer left out, \(why)")
     }
 }
