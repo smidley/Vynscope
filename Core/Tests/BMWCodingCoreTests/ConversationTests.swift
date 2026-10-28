@@ -2,6 +2,10 @@ import Foundation
 import Testing
 @testable import BMWCodingCore
 
+private func temporaryFolder() -> URL {
+    FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+}
+
 @Test func conversationRoundTripsThroughTheStore() throws {
     let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }
@@ -11,7 +15,7 @@ import Testing
     conversation.messages = [.object(["role": .string("user"), "content": .array([.object(["type": .string("text"), "text": .string("hi")])])])]
     conversation.turns = [.init(messageIndex: 0, usage: Usage(inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, webSearchRequests: 1, webFetchRequests: 0), rounds: 1, refused: false, truncated: false, stoppedAtRoundCap: false, stopped: false, model: "claude-opus-5-5")]
     try store.save(conversation)
-    #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Conversations/WBY73AW04RFFAKE19.json").path))
+    #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Conversations/WBY73AW04RFFAKE19-anthropic.json").path))
     #expect(store.load(vin: "WBY73AW04RFFAKE19") == conversation)
     #expect(conversation.totalUsage.webSearchRequests == 1)
     try store.deleteAll()
@@ -79,7 +83,7 @@ import Testing
     let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }
     try ConversationStore(directory: folder).save(Conversation(vin: "WBY73AW04RFFAKE19", started: Date(timeIntervalSince1970: 1_793_000_000), model: "claude-opus-5-5", carContext: "{}"))
-    let text = try String(contentsOf: folder.appending(path: "Conversations/WBY73AW04RFFAKE19.json"), encoding: .utf8)
+    let text = try String(contentsOf: folder.appending(path: "Conversations/WBY73AW04RFFAKE19-anthropic.json"), encoding: .utf8)
     #expect(text.hasPrefix("{\n  \"carContext\" : "))  // indented, and `carContext` first, which only sorting does
     #expect(text.contains("\"started\" : \"2026-10-26T07:33:20Z\""))
 }
@@ -156,4 +160,56 @@ import Testing
     // A page without a title is listed under its URL, and once, however often it is fetched or cited.
     #expect(Sources.list(in: [fetched("https://fetched", title: nil), cited("https://fetched")])
         == [Sources.Source(url: "https://fetched", title: "https://fetched")])
+}
+
+// Conversations per provider.
+
+@Test func conversationsAreStoredPerProvider() throws {
+    let folder = temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let store = ConversationStore(directory: folder)
+    let claude = Conversation(vin: "WBY73AW04RFFAKE19", started: .now, model: "claude-opus-5-5", carContext: "{}")
+    var gpt = Conversation(vin: "WBY73AW04RFFAKE19", started: .now, model: "gpt-6.1-sol", carContext: "{}", provider: .openai)
+    gpt.messages = [.object(["type": .string("message"), "role": .string("user"), "content": .string("hi")])]
+    try store.save(claude)
+    try store.save(gpt)
+    #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic)?.provider == .anthropic)
+    #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .openai)?.messages == gpt.messages)
+    try store.delete(vin: "WBY73AW04RFFAKE19", provider: .openai)
+    #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .openai) == nil)
+    #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) != nil)
+}
+
+@Test func aStageOneConversationFileLoadsAsAnthropics() throws {
+    let folder = temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let store = ConversationStore(directory: folder)
+    let conversations = folder.appendingPathComponent("Conversations")
+    try FileManager.default.createDirectory(at: conversations, withIntermediateDirectories: true)
+    let old = """
+        {"carContext":"{}","messages":[],"model":"claude-opus-5-5","started":"2026-10-27T10:00:00Z",\
+        "turns":[{"messageIndex":0,"model":"claude-opus-5-5","refused":false,"rounds":1,"stopped":false,\
+        "stoppedAtRoundCap":false,"truncated":false,"usage":{"cacheCreationInputTokens":0,"cacheReadInputTokens":0,\
+        "inputTokens":1,"outputTokens":1,"webFetchRequests":0,"webSearchRequests":0}}],"vin":"WBY73AW04RFFAKE19"}
+        """
+    try Data(old.utf8).write(to: conversations.appendingPathComponent("WBY73AW04RFFAKE19.json"))
+    let loaded = try #require(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic))
+    #expect(loaded.provider == .anthropic && loaded.turns.first?.provider == .anthropic)
+    try store.save(loaded)  // moves to the per-provider file
+    #expect(!FileManager.default.fileExists(atPath: conversations.appendingPathComponent("WBY73AW04RFFAKE19.json").path))
+    #expect(FileManager.default.fileExists(atPath: conversations.appendingPathComponent("WBY73AW04RFFAKE19-anthropic.json").path))
+}
+
+// What the brief's tests above do not isolate: the turn's own new fields, which its custom decoder reads.
+
+@Test func aTurnKeepsItsProviderAndWhetherWebSearchWasDropped() throws {
+    let folder = temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let store = ConversationStore(directory: folder)
+    var gpt = Conversation(vin: "WBY73AW04RFFAKE19", started: Date(timeIntervalSince1970: 1_793_000_000), model: "gpt-6.1-sol", carContext: "{}", provider: .openai)
+    gpt.turns = [.init(messageIndex: 0, usage: .zero, rounds: 1, refused: false, truncated: false, stoppedAtRoundCap: false, stopped: false, model: "gpt-6.1-sol", provider: .openai, webSearchDropped: true)]
+    try store.save(gpt)
+    let loaded = try #require(store.load(vin: "WBY73AW04RFFAKE19", provider: .openai))
+    #expect(loaded == gpt)
+    #expect(loaded.turns.first?.provider == .openai && loaded.turns.first?.webSearchDropped == true)
 }

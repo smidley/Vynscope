@@ -5,12 +5,30 @@ import Observation
 import UIKit
 #endif
 
-/// The mechanic's settings, kept as JSON in the user defaults: the model, the effort of chat turns, and the prices the
-/// cost estimates use.
+/// The mechanic's settings, kept as JSON in the user defaults: the provider, the model of each, the effort of chat
+/// turns, and the prices the cost estimates use.
 struct AISettings: Codable, Equatable {
+    var provider = Provider.anthropic
+    /// The Anthropic model.
     var model = "claude-opus-5-5"
+    /// The OpenAI model, picked from the list the signed-in account offers; `nil` until that list was fetched.
+    var openAIModel: String?
     var effort = "medium"
     var prices = PriceTable.standard
+
+    init() {}
+
+    /// Reads settings as `save` wrote them. A field the record lacks keeps its default, so that a record from before
+    /// there were providers, with no `provider` and no `openAIModel`, still loads, where `load()` would otherwise give
+    /// up on it and reset the owner's settings.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try container.decodeIfPresent(Provider.self, forKey: .provider) ?? provider
+        model = try container.decodeIfPresent(String.self, forKey: .model) ?? model
+        openAIModel = try container.decodeIfPresent(String.self, forKey: .openAIModel)
+        effort = try container.decodeIfPresent(String.self, forKey: .effort) ?? effort
+        prices = try container.decodeIfPresent(PriceTable.self, forKey: .prices) ?? prices
+    }
 
     /// The models to choose from: the name the API knows, then the one shown.
     static let models = [

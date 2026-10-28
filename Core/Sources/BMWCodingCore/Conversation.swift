@@ -1,26 +1,43 @@
 import Foundation
 
-/// One chat with the mechanic about one car: the messages as the Messages API takes them, so that the next turn carries
-/// on from them, and how each turn went.
+/// One chat with the mechanic about one car, with one provider: the messages as that provider's API takes them, so that
+/// the next turn carries on from them, and how each turn went.
 public struct Conversation: Codable, Equatable {
     public var vin: String
     public var started: Date
     public var model: String
+    /// The provider whose API `messages` are in and that answered the turns.
+    public var provider: Provider
     /// The health check's findings as JSON text, which the system prompt carries.
     public var carContext: String
     public var messages: [JSON]
     public var turns: [TurnRecord]
 
-    /// `messages` and `turns` are empty unless given, as in a new conversation.
+    /// `messages` and `turns` are empty unless given, as in a new conversation, and `provider` is Anthropic.
     public init(
-        vin: String, started: Date, model: String, carContext: String, messages: [JSON] = [], turns: [TurnRecord] = []
+        vin: String, started: Date, model: String, carContext: String, messages: [JSON] = [], turns: [TurnRecord] = [],
+        provider: Provider = .anthropic
     ) {
         self.vin = vin
         self.started = started
         self.model = model
+        self.provider = provider
         self.carContext = carContext
         self.messages = messages
         self.turns = turns
+    }
+
+    /// Reads a conversation as `save` wrote it; one written before conversations were kept per provider has no
+    /// `provider`, and is Anthropic's.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        vin = try container.decode(String.self, forKey: .vin)
+        started = try container.decode(Date.self, forKey: .started)
+        model = try container.decode(String.self, forKey: .model)
+        provider = try container.decodeIfPresent(Provider.self, forKey: .provider) ?? .anthropic
+        carContext = try container.decode(String.self, forKey: .carContext)
+        messages = try container.decode([JSON].self, forKey: .messages)
+        turns = try container.decode([TurnRecord].self, forKey: .turns)
     }
 
     /// What every turn used, added up.
@@ -41,14 +58,19 @@ public struct TurnRecord: Codable, Equatable {
     /// The owner stopped the turn.
     public var stopped: Bool
     public var model: String
+    /// The provider that ran the turn.
+    public var provider: Provider
     /// What went wrong, as the chat said it, when the turn failed; `nil` otherwise.
     public var error: String?
     /// The turn's reads and web lookups, a line each, as the chat showed them while it ran.
     public var activity: [String]
+    /// The turn ran without web search, because the model would not take it.
+    public var webSearchDropped: Bool
 
     public init(
         messageIndex: Int, usage: Usage, rounds: Int, refused: Bool, truncated: Bool, stoppedAtRoundCap: Bool,
-        stopped: Bool, model: String, error: String? = nil, activity: [String] = []
+        stopped: Bool, model: String, error: String? = nil, activity: [String] = [], provider: Provider = .anthropic,
+        webSearchDropped: Bool = false
     ) {
         self.messageIndex = messageIndex
         self.usage = usage
@@ -58,11 +80,15 @@ public struct TurnRecord: Codable, Equatable {
         self.stoppedAtRoundCap = stoppedAtRoundCap
         self.stopped = stopped
         self.model = model
+        self.provider = provider
         self.error = error
         self.activity = activity
+        self.webSearchDropped = webSearchDropped
     }
 
-    /// Reads a record as `save` wrote it; one written before turns kept their `error` and `activity` has neither.
+    /// Reads a record as `save` wrote it; one written before turns kept their `error` and `activity` has neither, and
+    /// one written before conversations were kept per provider has no `provider`, which is Anthropic, and no
+    /// `webSearchDropped`, which is `false`.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         messageIndex = try container.decode(Int.self, forKey: .messageIndex)
@@ -73,41 +99,57 @@ public struct TurnRecord: Codable, Equatable {
         stoppedAtRoundCap = try container.decode(Bool.self, forKey: .stoppedAtRoundCap)
         stopped = try container.decode(Bool.self, forKey: .stopped)
         model = try container.decode(String.self, forKey: .model)
+        provider = try container.decodeIfPresent(Provider.self, forKey: .provider) ?? .anthropic
         error = try container.decodeIfPresent(String.self, forKey: .error)
         activity = try container.decodeIfPresent([String].self, forKey: .activity) ?? []
+        webSearchDropped = try container.decodeIfPresent(Bool.self, forKey: .webSearchDropped) ?? false
     }
 }
 
-/// The folder the conversations live in, one JSON file per car: `Conversations/<vin>.json`. A VIN is letters and
-/// digits (`VIN.isValid`), so it is a file name as it is. Dates are written as ISO 8601 text, in whole seconds.
+/// The folder the conversations live in, one JSON file per car and provider: `Conversations/<vin>-<provider>.json`. A
+/// VIN is letters and digits (`VIN.isValid`), so it is a file name as it is. Dates are written as ISO 8601 text, in
+/// whole seconds. Before there were providers a car's file was `Conversations/<vin>.json`; that one is Anthropic's,
+/// and is read until Anthropic's conversation is saved.
 public struct ConversationStore {
     private let directory: URL
 
     public init(directory: URL) { self.directory = directory }
 
-    /// The conversation of the car with this VIN, or `nil` when there is no file or it cannot be decoded, in which case
-    /// the next `save` replaces it.
-    public func load(vin: String) -> Conversation? {
+    /// The conversation of the car with this VIN with `provider`, or `nil` when there is no file or it cannot be
+    /// decoded, in which case the next `save` replaces it. Anthropic's is read from the file of before there were
+    /// providers when it has none of its own.
+    public func load(vin: String, provider: Provider = .anthropic) -> Conversation? {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(Conversation.self, from: Data(contentsOf: file(vin: vin)))
+        var url = file(vin: vin, provider: provider)
+        if provider == .anthropic, !FileManager.default.fileExists(atPath: url.path) { url = legacyFile(vin: vin) }
+        return try? decoder.decode(Conversation.self, from: Data(contentsOf: url))
     }
 
-    /// Writes the conversation to its car's file as pretty-printed JSON with sorted keys, creating the folders on the
-    /// way. The file is replaced as a whole, so a crash half-way leaves the old one.
+    /// Writes the conversation to the file of its car and provider as pretty-printed JSON with sorted keys, creating
+    /// the folders on the way. The file is replaced as a whole, so a crash half-way leaves the old one. Anthropic's
+    /// conversation also removes the car's file of before there were providers, which it replaces; a removal that
+    /// fails is ignored.
     public func save(_ conversation: Conversation) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try encoder.encode(conversation).write(to: file(vin: conversation.vin), options: .atomic)
+        try encoder.encode(conversation).write(
+            to: file(vin: conversation.vin, provider: conversation.provider), options: .atomic)
+        if conversation.provider == .anthropic {
+            try? FileManager.default.removeItem(at: legacyFile(vin: conversation.vin))
+        }
     }
 
-    /// Removes the conversation of the car with this VIN: its file. Its being missing is not an error.
-    public func delete(vin: String) throws {
-        let url = file(vin: vin)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        try FileManager.default.removeItem(at: url)
+    /// Removes the conversation of the car with this VIN with `provider`: its file, and for Anthropic's the file of
+    /// before there were providers too. Their being missing is not an error.
+    public func delete(vin: String, provider: Provider = .anthropic) throws {
+        var urls = [file(vin: vin, provider: provider)]
+        if provider == .anthropic { urls.append(legacyFile(vin: vin)) }
+        for url in urls where FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
     }
 
     /// Removes every conversation: the `Conversations` folder. Its being missing is not an error.
@@ -118,7 +160,12 @@ public struct ConversationStore {
 
     private var folder: URL { directory.appendingPathComponent("Conversations") }
 
-    private func file(vin: String) -> URL { folder.appendingPathComponent("\(vin).json") }
+    private func file(vin: String, provider: Provider) -> URL {
+        folder.appendingPathComponent("\(vin)-\(provider.rawValue).json")
+    }
+
+    /// Where a car's conversation was kept before there were providers: Anthropic's.
+    private func legacyFile(vin: String) -> URL { folder.appendingPathComponent("\(vin).json") }
 }
 
 /// The text of an assistant message as the chat shows it.
