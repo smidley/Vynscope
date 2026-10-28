@@ -26,6 +26,20 @@ func textStream(_ text: String, input: Int = 100, cached: Int = 0, output: Int =
     messageStream([textBlock(0, text)], stop: "end_turn", input: input, cached: cached, output: output)
 }
 
+/// A tool_use stream: an empty thinking block with a signature, then one `tool_use` block whose input arrives as the
+/// JSON text `input`.
+func toolUseStream(id: String, name: String, input: String, output: Int = 10) -> String {
+    messageStream([thinkingBlock(0), toolUseBlock(1, id: id, name: name, input: input)], stop: "tool_use", output: output)
+}
+
+/// A pause_turn stream with one text block.
+func pauseStream() -> String { messageStream([textBlock(0, "Searching")], stop: "pause_turn") }
+
+/// A refusal stream with one text block and one `tool_use` block.
+func refusalStream(text: String) -> String {
+    messageStream([textBlock(0, text), toolUseBlock(1, id: "t", name: "get_vehicle", input: "{}")], stop: "refusal")
+}
+
 /// One message as the Messages API streams it: `message_start` with the input usage, the events of `blocks`, a
 /// `message_delta` with `stop` and the cumulative usage, and `message_stop`.
 private func messageStream(_ blocks: [String], stop: String, input: Int = 100, cached: Int = 0, output: Int = 10) -> String {
@@ -38,6 +52,18 @@ private func messageStream(_ blocks: [String], stop: String, input: Int = 100, c
 private func textBlock(_ index: Int, _ text: String) -> String {
     [event("content_block_start", #"{"type":"content_block_start","index":\#(index),"content_block":{"type":"text","text":""}}"#),
      event("content_block_delta", #"{"type":"content_block_delta","index":\#(index),"delta":{"type":"text_delta","text":\#(literal(text))}}"#),
+     event("content_block_stop", #"{"type":"content_block_stop","index":\#(index)}"#)].joined()
+}
+
+private func thinkingBlock(_ index: Int) -> String {
+    [event("content_block_start", #"{"type":"content_block_start","index":\#(index),"content_block":{"type":"thinking","thinking":""}}"#),
+     event("content_block_delta", #"{"type":"content_block_delta","index":\#(index),"delta":{"type":"signature_delta","signature":"sig"}}"#),
+     event("content_block_stop", #"{"type":"content_block_stop","index":\#(index)}"#)].joined()
+}
+
+private func toolUseBlock(_ index: Int, id: String, name: String, input: String) -> String {
+    [event("content_block_start", #"{"type":"content_block_start","index":\#(index),"content_block":{"type":"tool_use","id":\#(literal(id)),"name":\#(literal(name)),"input":{}}}"#),
+     event("content_block_delta", #"{"type":"content_block_delta","index":\#(index),"delta":{"type":"input_json_delta","partial_json":\#(literal(input))}}"#),
      event("content_block_stop", #"{"type":"content_block_stop","index":\#(index)}"#)].joined()
 }
 

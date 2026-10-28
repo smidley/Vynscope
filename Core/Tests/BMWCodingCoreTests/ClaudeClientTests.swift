@@ -93,3 +93,98 @@ func request() -> ClaudeRequest { ClaudeRequest(model: "m", effort: "medium", sy
     for try await line in URLSessionTransport.lines(of: bytes) { lines.append(line) }
     #expect(lines == ["event: ping", "data: {}", "", "{\"type\":\"error\"}"])
 }
+
+@Test func runsToolsAndEchoesContentVerbatim() async throws {
+    let transport = FakeTransport([
+        (200, [:], toolUseStream(id: "toolu_1", name: "read_faults", input: #"{"module":"40"}"#, output: 50)),
+        (200, [:], textStream("Two faults.", input: 900, cached: 800, output: 20))])
+    var messages: [JSON] = [userText("What is wrong?")]
+    var calls: [ToolCall] = []
+    let turn = try await ClaudeClient(transport: transport, apiKey: "k", log: Log()).run(
+        messages: &messages, system: [], tools: [], model: "claude-opus-5-5", effort: "medium",
+        runTool: { calls.append($0); return ToolResult(#"{"faults":[]}"#) }, onUpdate: { _ in })
+    #expect(calls == [ToolCall(id: "toolu_1", name: "read_faults", input: .object(["module": .string("40")]))])
+    #expect(messages.count == 4)
+    #expect(messages[1]["content"]?.array?.contains { $0["type"]?.string == "thinking" } == true)
+    #expect(messages[2] == .object(["role": .string("user"), "content": .array([.object([
+        "type": .string("tool_result"), "tool_use_id": .string("toolu_1"), "content": .string(#"{"faults":[]}"#)])])]))
+    #expect(transport.calls[1].body["messages"]?.array?.count == 3)
+    #expect(turn.rounds == 1 && turn.usage.outputTokens == 70 && turn.usage.cacheReadInputTokens == 800)
+}
+@Test func toolFailureIsAnErrorResult() async throws {
+    let transport = FakeTransport([(200, [:], toolUseStream(id: "t", name: "read_value", input: #"{"module":"40","did":"3000"}"#)), (200, [:], textStream("ok"))])
+    var messages: [JSON] = [userText("q")]
+    _ = try await ClaudeClient(transport: transport, apiKey: "k", log: Log()).run(
+        messages: &messages, system: [], tools: [], model: "m", effort: "medium",
+        runTool: { _ in ToolResult("module 40 did not answer", isError: true) }, onUpdate: { _ in })
+    #expect(messages[2]["content"]?.array?.first?["is_error"]?.bool == true)
+}
+@Test func stopsAtTheRoundCapWithToolChoiceNone() async throws {
+    var script = (0..<13).map { _ in (200, [String: String](), toolUseStream(id: "t", name: "get_vehicle", input: "{}")) }
+    script.append((200, [:], textStream("Here is what I have.")))
+    let transport = FakeTransport(script)
+    var messages: [JSON] = [userText("q")]
+    var ran = 0
+    let turn = try await ClaudeClient(transport: transport, apiKey: "k", log: Log()).run(
+        messages: &messages, system: [], tools: [], model: "m", effort: "medium",
+        runTool: { _ in ran += 1; return ToolResult("{}") }, onUpdate: { _ in })
+    #expect(ran == 12 && turn.rounds == 13 && turn.stoppedAtRoundCap)
+    let last = try #require(transport.calls.last)
+    #expect(last.body["tool_choice"] == .object(["type": .string("none")]))
+    #expect(messages[messages.count - 2]["content"]?.array?.first?["content"]?.string == "Tool limit for this message reached; answer with what you already have")
+    #expect(messages.last?["content"]?.array?.first?["text"]?.string == "Here is what I have.")
+}
+@Test func refusalRunsNoToolAndKeepsOnlyText() async throws {
+    let transport = FakeTransport([(200, [:], refusalStream(text: "I cannot"))])
+    var messages: [JSON] = [userText("q")]
+    var ran = false
+    let turn = try await ClaudeClient(transport: transport, apiKey: "k", log: Log()).run(
+        messages: &messages, system: [], tools: [], model: "m", effort: "medium",
+        runTool: { _ in ran = true; return ToolResult("") }, onUpdate: { _ in })
+    #expect(!ran && turn.refused)
+    #expect(messages.count == 2 && messages[1]["content"]?.array?.count == 1)
+    #expect(messages[1]["content"]?.array?.first?["type"]?.string == "text")
+}
+@Test func pauseTurnIsResentUnchanged() async throws {
+    let transport = FakeTransport([(200, [:], pauseStream()), (200, [:], textStream("done"))])
+    var messages: [JSON] = [userText("q")]
+    let turn = try await ClaudeClient(transport: transport, apiKey: "k", log: Log()).run(
+        messages: &messages, system: [], tools: [], model: "m", effort: "medium",
+        runTool: { _ in ToolResult("") }, onUpdate: { _ in })
+    #expect(transport.calls[1].body["messages"]?.array?.count == 2)
+    #expect(transport.calls[1].body["messages"]?.array?.last?["role"]?.string == "assistant")
+    #expect(turn.rounds == 1 && messages.count == 3)
+}
+@Test func truncatedToolInputRunsNothing() async throws {
+    let stream = toolUseStream(id: "t", name: "get_vehicle", input: "{}").replacingOccurrences(of: "\"stop_reason\":\"tool_use\"", with: "\"stop_reason\":\"max_tokens\"")
+    let transport = FakeTransport([(200, [:], stream)])
+    var messages: [JSON] = [userText("q")]
+    var ran = false
+    let turn = try await ClaudeClient(transport: transport, apiKey: "k", log: Log()).run(
+        messages: &messages, system: [], tools: [], model: "m", effort: "medium",
+        runTool: { _ in ran = true; return ToolResult("") }, onUpdate: { _ in })
+    #expect(!ran && turn.truncated && messages.count == 1)
+}
+@Test func aFailedTurnLeavesTheMessagesAsTheyWere() async throws {
+    let transport = FakeTransport([(200, [:], toolUseStream(id: "t", name: "get_vehicle", input: "{}"))])
+    var messages: [JSON] = [userText("q")]
+    let before = messages
+    struct Boom: Error {}
+    await #expect(throws: Boom.self) {
+        try await ClaudeClient(transport: transport, apiKey: "k", log: Log()).run(
+            messages: &messages, system: [], tools: [], model: "m", effort: "medium",
+            runTool: { _ in throw Boom() }, onUpdate: { _ in })
+    }
+    #expect(messages == before)
+}
+@Test func echoDropsModelInternalsBeforeAFallback() {
+    let text: JSON = .object(["type": .string("text"), "text": .string("a")])
+    let thinking: JSON = .object(["type": .string("thinking"), "thinking": .string(""), "signature": .string("s")])
+    let toolUse: JSON = .object(["type": .string("tool_use"), "id": .string("t"), "name": .string("x"), "input": .object([:])])
+    let search: JSON = .object(["type": .string("server_tool_use"), "id": .string("srv"), "name": .string("web_search"), "input": .object([:])])
+    let result: JSON = .object(["type": .string("web_search_tool_result"), "tool_use_id": .string("srv"), "content": .array([])])
+    let lone: JSON = .object(["type": .string("server_tool_use"), "id": .string("srv2"), "name": .string("web_search"), "input": .object([:])])
+    let fallback: JSON = .object(["type": .string("fallback"), "from": .object(["model": .string("a")]), "to": .object(["model": .string("b")])])
+    #expect(ClaudeClient.echo([thinking, text, toolUse]) == [thinking, text, toolUse])
+    #expect(ClaudeClient.echo([thinking, text, toolUse, search, result, lone, fallback, thinking, text]) == [text, search, result, fallback, thinking, text])
+}
