@@ -101,16 +101,17 @@ public struct Turn: Equatable, Sendable {
     public var rounds: Int
     /// The model declined; what it said is kept as text.
     public var refused: Bool
-    /// `max_tokens` cut off a tool call, which did not run.
+    /// `max_tokens` cut the answer off; only its text was kept, and none of its tool calls ran.
     public var truncated: Bool
-    /// The round cap was reached and the model was asked to answer without tools.
+    /// The round cap was reached: after tool rounds the model was asked to answer without tools; after pauses the
+    /// paused answer was dropped.
     public var stoppedAtRoundCap: Bool
 }
 
 /// Talks to the Messages API: one streamed request at a time, with retries, and the mechanic's tool loop over
 /// them. Every request and its usage goes to the log; the key never does.
 public final class ClaudeClient {
-    /// Tool rounds per owner message; the round after the cap is asked to answer without tools.
+    /// Tool rounds and pauses per owner message.
     public static let roundCap = 12
 
     private let transport: any Transport
@@ -132,19 +133,19 @@ public final class ClaudeClient {
     }
 
     /// The body for `request`: streamed, at most 16000 tokens, the server-side fallback on, and a cache marker on
-    /// the last system block and on the last block of the last message. The markers go on copies, so the stored
-    /// conversation stays as the API sent it, every echo is resent byte for byte, and the message marker moves
-    /// with the last message.
+    /// the last system block and on the last block of the last message that can carry one. The markers go on
+    /// copies, so the stored conversation stays as the API sent it, every echo is resent byte for byte, and the
+    /// message marker moves with the last message.
     public static func body(for request: ClaudeRequest) -> JSON {
         var messages = request.messages
         if case .object(var last)? = messages.last, let content = last["content"]?.array {
-            last["content"] = .array(markingLast(content))
+            last["content"] = .array(marking(content))
             messages[messages.count - 1] = .object(last)
         }
         var body: [String: JSON] = [
             "model": .string(request.model), "max_tokens": .number(16000), "stream": .bool(true),
             "fallbacks": .string("default"), "output_config": .object(["effort": .string(request.effort)]),
-            "system": .array(markingLast(request.system)), "tools": .array(request.tools),
+            "system": .array(marking(request.system)), "tools": .array(request.tools),
             "messages": .array(messages),
         ]
         if request.toolChoiceNone { body["tool_choice"] = .object(["type": .string("none")]) }
@@ -202,8 +203,8 @@ public final class ClaudeClient {
     }
 
     /// Runs one owner message, which `messages` already ends with, to its answer: sends, runs the tools the model
-    /// calls through `runTool`, and sends their results, round after round, up to `roundCap`; a `pause_turn` is
-    /// resent as it stands. `messages` takes every message of the turn only when it returns: when `send` or
+    /// calls through `runTool` and sends their results, and resends a `pause_turn` as it stands, for up to
+    /// `roundCap` rounds. `messages` takes every message of the turn only when it returns: when `send` or
     /// `runTool` throws, it is left as it was, so it never holds a tool call without its result.
     public func run(
         messages: inout [JSON], system: [JSON], tools: [JSON], model: String, effort: String,
@@ -220,15 +221,23 @@ public final class ClaudeClient {
             turn.usage = turn.usage + message.usage
             let followUp = request.messages.contains { $0["role"]?.string == "assistant" }
             if followUp, message.usage.cacheReadInputTokens == 0 { log.note("ai: no cache read on this request") }
-            if !message.content.isEmpty { conversation.append(Self.message("assistant", Self.echo(message.content))) }
-            if toolChoiceNone {
-                turn.stoppedAtRoundCap = true
+            // The rest works from the content as it is sent back, so a call abandoned at a fallback never runs.
+            let content = Self.echo(message.content)
+            // A refusal, or an answer max_tokens cut off, goes back as its text alone and none of its calls runs: a
+            // half-made tool call or thinking block must never be sent back.
+            let cut = message.stopReason == "refusal" || message.stopReason == "max_tokens"
+            let answer = cut ? content.filter { $0["type"]?.string == "text" } : content
+            if !answer.isEmpty { conversation.append(Self.message("assistant", answer)) }
+            if cut || toolChoiceNone {
+                turn.refused = message.stopReason == "refusal"
+                turn.truncated = message.stopReason == "max_tokens"
+                turn.stoppedAtRoundCap = toolChoiceNone
                 break
             }
-            let calls = message.content.filter { $0["type"]?.string == "tool_use" }
             switch message.stopReason {
             case "tool_use":
                 turn.rounds += 1
+                let calls = content.filter { $0["type"]?.string == "tool_use" }
                 var results: [JSON] = []
                 if turn.rounds > Self.roundCap {
                     let limit = ToolResult(
@@ -249,18 +258,17 @@ public final class ClaudeClient {
                 }
                 conversation.append(Self.message("user", results))
             case "pause_turn":
-                // ponytail: a pause counts as a round but is not capped on its own; cap it too if the API is ever
-                // seen pausing without end.
                 turn.rounds += 1
-            default:
-                // A refusal, or a tool call that max_tokens cut off, is sent back as its text alone, and nothing runs.
-                turn.refused = message.stopReason == "refusal"
-                turn.truncated = message.stopReason == "max_tokens" && !calls.isEmpty
-                if turn.refused || turn.truncated {
-                    if !message.content.isEmpty { conversation.removeLast() }
-                    let text = message.content.filter { $0["type"]?.string == "text" }
-                    if !text.isEmpty { conversation.append(Self.message("assistant", text)) }
+                if turn.rounds > Self.roundCap {
+                    // The paused answer is one assistant turn however many messages it spans; it goes whole, so
+                    // the conversation does not end in an unfinished turn.
+                    while conversation.count > messages.count, conversation.last?["role"]?.string == "assistant" {
+                        conversation.removeLast()
+                    }
+                    turn.stoppedAtRoundCap = true
+                    break loop
                 }
+            default:
                 break loop
             }
         }
@@ -301,12 +309,15 @@ public final class ClaudeClient {
         return .object(block)
     }
 
-    /// `blocks` with `cache_control: {"type": "ephemeral"}` on the last one.
-    private static func markingLast(_ blocks: [JSON]) -> [JSON] {
-        guard case .object(var last)? = blocks.last else { return blocks }
-        last["cache_control"] = .object(["type": .string("ephemeral")])
+    /// `blocks` with `cache_control: {"type": "ephemeral"}` on the last one that is not a thinking or `fallback`
+    /// block, which the API refuses it on; unchanged when there is none.
+    private static func marking(_ blocks: [JSON]) -> [JSON] {
+        let refusing: Set = ["thinking", "redacted_thinking", "fallback"]
+        guard let index = blocks.lastIndex(where: { !refusing.contains($0["type"]?.string ?? "") }),
+              case .object(var block) = blocks[index] else { return blocks }
+        block["cache_control"] = .object(["type": .string("ephemeral")])
         var blocks = blocks
-        blocks[blocks.count - 1] = .object(last)
+        blocks[index] = .object(block)
         return blocks
     }
 
