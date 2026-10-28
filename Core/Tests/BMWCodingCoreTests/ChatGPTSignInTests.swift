@@ -42,6 +42,8 @@ let attempt = SignInAttempt(verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEj
     #expect(throws: SignInError.stateMismatch) { try ChatGPTSignIn.parseCallback(URL(string: "http://127.0.0.1:1455/auth/callback?error=access_denied&state=forged")!, expectedState: "st4te", expectedClientID: nil) }
     #expect(throws: SignInError.registrationIncomplete) { try ChatGPTSignIn.parseCallback(URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=st4te")!, expectedState: "st4te", expectedClientID: nil) }
     #expect(throws: SignInError.clientMismatch) { try ChatGPTSignIn.parseCallback(good, expectedState: "st4te", expectedClientID: "oaiapp_other") }
+    // With no account held (after a sign-out) another client id is a new registration.
+    #expect(try ChatGPTSignIn.parseCallback(good, expectedState: "st4te", expectedClientID: "oaiapp_other", accountHeld: false).clientID == "oaiapp_abc")
     #expect(try ChatGPTSignIn.parseCallback(URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=st4te")!, expectedState: "st4te", expectedClientID: "oaiapp_abc").clientID == nil)
 }
 
@@ -105,6 +107,14 @@ func session(_ store: MemoryAccountStore, _ transport: FakeHTTPTransport, now: D
     ChatGPTSession(store: store, transport: transport, log: log, now: { now }, sleep: { _ in })
 }
 let tokenJSON = #"{"access_token":"at1","refresh_token":"rt1","id_token":"\#(signedIDToken.jwt)","token_type":"Bearer","expires_in":3600,"scope":"openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"}"#
+let jwksJSON = String(decoding: signedIDToken.jwks.encoded(), as: UTF8.self)
+/// A refresh's answer that leaves the grant as it was.
+let renewedJSON = #"{"access_token":"at2","refresh_token":"rt2","token_type":"Bearer","expires_in":3600}"#
+
+/// A kept sign-in saved at 1_800_000_000 (it expires at 1_800_003_600), the plan granted unless `scopes` says otherwise.
+func heldAccount(subject: String = "sub", scopes: [String] = [ChatGPT.planScope], savedAt: Date = Date(timeIntervalSince1970: 1_800_000_000)) -> ChatGPTAccount {
+    ChatGPTAccount(email: "scott@example.com", issuer: ChatGPT.issuer, subject: subject, clientID: "oaiapp_abc", hostID: "urn:uuid:1", idToken: nil, accessToken: "at1", refreshToken: "rt1", tokenType: "Bearer", expiresIn: 3600, scopes: scopes, savedAt: savedAt)
+}
 
 @Test func aFirstSignInRegistersExchangesChecksAndKeepsTheAccount() async throws {
     let store = MemoryAccountStore()
@@ -196,4 +206,109 @@ let tokenJSON = #"{"access_token":"at1","refresh_token":"rt1","id_token":"\#(sig
     store.account = ChatGPTAccount(email: "e", issuer: ChatGPT.issuer, subject: "s", clientID: "oaiapp_abc", hostID: "urn:uuid:1", idToken: nil, accessToken: "at", refreshToken: "rt", tokenType: "Bearer", expiresIn: 3600, scopes: [], savedAt: .now)
     #expect(await session(store, FakeHTTPTransport([reply(503, ""), reply(503, ""), reply(503, "")])).signOut() == .unconfirmed)
     #expect(store.account == nil)
+}
+
+@Test func aTokenAskedForDuringASignOutIsRefused() async throws {
+    let store = MemoryAccountStore()
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"; store.account = heldAccount()
+    // The second reply is what a refresh started during the sign-out would get.
+    let transport = FakeHTTPTransport([reply(200, ""), reply(200, renewedJSON)])
+    let session = session(store, transport, now: Date(timeIntervalSince1970: 1_800_003_560))
+    transport.hold = true
+    let signingOut = Task { await session.signOut() }
+    for _ in 0..<100 where transport.requests.isEmpty { await Task.yield() }
+    transport.hold = false
+    // The revoke is still open: a refresh now would rotate the very token being revoked.
+    await #expect(throws: SignInError.signedOut) { try await session.validAccessToken() }
+    transport.release()
+    #expect(await signingOut.value == .revoked)
+    #expect(transport.requests.count == 1 && store.account == nil)
+    // Once the sign-out is over, a token is served again.
+    store.account = heldAccount(savedAt: Date(timeIntervalSince1970: 1_800_003_000))
+    #expect(try await session.validAccessToken() == "at1")
+}
+
+@Test func aRefreshAnsweredAfterTheAccountIsGoneWritesNothingBack() async throws {
+    let store = MemoryAccountStore()
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"; store.account = heldAccount()
+    let transport = FakeHTTPTransport([reply(200, renewedJSON)])
+    let session = session(store, transport, now: Date(timeIntervalSince1970: 1_800_003_560))
+    transport.hold = true
+    let refreshing = Task { try await session.validAccessToken() }
+    for _ in 0..<100 where transport.requests.isEmpty { await Task.yield() }
+    session.forget()
+    transport.release()
+    await #expect(throws: SignInError.signedOut) { try await refreshing.value }
+    #expect(transport.requests.count == 1 && store.account == nil)
+}
+
+@Test func anInvalidClientExchangeDropsTheRegistration() async throws {
+    let store = MemoryAccountStore()
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"
+    let session = session(store, FakeHTTPTransport([reply(401, #"{"error":"invalid_client"}"#)]))
+    let (_, attempt) = session.begin(redirect: redirect)
+    await #expect(throws: SignInError.tokenEndpoint(status: 401, error: "invalid_client", description: nil)) {
+        try await session.complete(callback: URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=\(attempt.state)")!, attempt: attempt, redirect: redirect)
+    }
+    #expect(store.clientID == nil && store.hostID == "urn:uuid:1")
+    #expect(session.begin(redirect: redirect).url.absoluteString.contains("client_id=dynamic_agent_client"))
+}
+
+@Test func anInvalidClientRefreshSignsOutAndDropsTheRegistration() async throws {
+    let store = MemoryAccountStore()
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"; store.account = heldAccount()
+    let session = session(store, FakeHTTPTransport([reply(401, #"{"error":"invalid_client"}"#)]), now: Date(timeIntervalSince1970: 1_800_003_560))
+    await #expect(throws: SignInError.signedOut) { try await session.validAccessToken() }
+    #expect(store.account == nil && store.clientID == nil && store.hostID == "urn:uuid:1")
+}
+
+@Test func aReturningSignInMustComeBackAsTheHeldAccount() async throws {
+    let store = MemoryAccountStore()
+    let held = heldAccount(subject: "someone_else")
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"; store.account = held
+    let transport = FakeHTTPTransport([reply(200, tokenJSON), reply(200, jwksJSON)])
+    let session = session(store, transport)
+    let (_, attempt) = session.begin(redirect: redirect)
+    let fixed = SignInAttempt(verifier: attempt.verifier, state: attempt.state, nonce: "n0nce")
+    // While an account is held, another client id is refused before anything is exchanged.
+    await #expect(throws: SignInError.clientMismatch) {
+        try await session.complete(callback: URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=\(attempt.state)&client_id=oaiapp_other")!, attempt: fixed, redirect: redirect)
+    }
+    #expect(transport.requests.isEmpty)
+    // The token is user_1's, not the held account's: nothing is replaced.
+    await #expect(throws: SignInError.differentAccount) {
+        try await session.complete(callback: URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=\(attempt.state)")!, attempt: fixed, redirect: redirect)
+    }
+    #expect(store.account == held && store.clientID == "oaiapp_abc")
+}
+
+@Test func afterASignOutANewClientIDIsANewRegistration() async throws {
+    let store = MemoryAccountStore()
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_old"
+    let transport = FakeHTTPTransport([reply(200, tokenJSON), reply(200, jwksJSON)])
+    let session = session(store, transport)
+    let (url, attempt) = session.begin(redirect: redirect)
+    #expect(url.absoluteString.contains("client_id=oaiapp_old"))
+    let fixed = SignInAttempt(verifier: attempt.verifier, state: attempt.state, nonce: "n0nce")
+    let account = try await session.complete(callback: URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=\(attempt.state)&client_id=oaiapp_abc")!, attempt: fixed, redirect: redirect)
+    #expect(account.clientID == "oaiapp_abc" && store.clientID == "oaiapp_abc")
+    #expect(String(decoding: try #require(transport.requests[0].httpBody), as: UTF8.self).contains("client_id=oaiapp_abc"))
+}
+
+@Test func noTokenServesThePlanWithoutItsGrant() async throws {
+    let store = MemoryAccountStore()
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"; store.account = heldAccount()
+    let noPlan = #"{"access_token":"at2","refresh_token":"rt2","token_type":"Bearer","expires_in":3600,"scope":"openid profile email offline_access resource.invoke"}"#
+    let session = session(store, FakeHTTPTransport([reply(200, noPlan)]), now: Date(timeIntervalSince1970: 1_800_003_560))
+    // The renewed grant is the one checked.
+    await #expect(throws: SignInError.planNotGranted) { try await session.validAccessToken() }
+    #expect(store.account?.accessToken == "at2" && store.account?.mayUsePlan == false)
+}
+
+@Test func theModelListMayHaveATokenWithoutThePlanGrant() async throws {
+    let store = MemoryAccountStore()
+    store.account = heldAccount(scopes: ["openid", "profile", "email", "offline_access", "resource.invoke"])
+    let session = session(store, FakeHTTPTransport([]), now: Date(timeIntervalSince1970: 1_800_000_100))
+    #expect(try await session.validAccessToken(forPlanUse: false) == "at1")
+    await #expect(throws: SignInError.planNotGranted) { try await session.validAccessToken() }
 }

@@ -149,17 +149,28 @@ func webSearchItem(_ index: Int, query: String) -> ResponsesItemFixture {
     return ResponsesItemFixture(events: events.joined(), json: item)
 }
 
-/// Answers `send` from a script, one reply per request, in order, and records every request.
+/// Answers `send` from a script, one reply per request, in order, and records every request. A request made while
+/// `hold` is set gets its reply only at `release()`, so that a test can keep one call open while it makes another.
 final class FakeHTTPTransport: HTTPTransport {
     private(set) var requests: [URLRequest] = []
     private var script: [HTTPReply]
+    var hold = false
+    private var held: [CheckedContinuation<Void, Never>] = []
 
     init(_ script: [HTTPReply]) { self.script = script }
 
     func send(_ request: URLRequest) async throws -> HTTPReply {
         requests.append(request)
         precondition(!script.isEmpty, "unscripted request")
-        return script.removeFirst()
+        let reply = script.removeFirst()
+        if hold { await withCheckedContinuation { held.append($0) } }
+        return reply
+    }
+
+    /// Lets the replies held so far go.
+    func release() {
+        for request in held { request.resume() }
+        held.removeAll()
     }
 }
 

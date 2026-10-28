@@ -61,8 +61,10 @@ public enum SignInError: Error, Equatable {
     case missingCode
     /// A first sign-in's callback carried no issued client id.
     case registrationIncomplete
-    /// The callback named a client id other than the attempt's.
+    /// The callback named a client id other than the attempt's while an account is held.
     case clientMismatch
+    /// A returning sign-in came back as another ChatGPT account than the one held: nothing was replaced.
+    case differentAccount
     /// The token endpoint refused: its status, `error` and `error_description`.
     case tokenEndpoint(status: Int, error: String, description: String?)
     /// The ID token failed a check: which one.
@@ -134,8 +136,11 @@ public enum ChatGPTSignIn {
     }
 
     /// The redirect checked as OpenAI's sign-in page orders it: the state first, then a refusal, then the code and the
-    /// client id. A later sign-in's callback may leave the client id out, which keeps the expected one.
-    public static func parseCallback(_ url: URL, expectedState: String, expectedClientID: String?) throws -> Callback {
+    /// client id. A later sign-in's callback may leave the client id out, which keeps the expected one. Another client
+    /// id is `clientMismatch` while an account is held; with none held (after a sign-out) it is a new registration.
+    public static func parseCallback(
+        _ url: URL, expectedState: String, expectedClientID: String?, accountHeld: Bool = true
+    ) throws -> Callback {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         let value = { (name: String) in items.first { $0.name == name }?.value }
         guard value("state") == expectedState else { throw SignInError.stateMismatch }
@@ -143,7 +148,9 @@ public enum ChatGPTSignIn {
         guard let code = value("code") else { throw SignInError.missingCode }
         let clientID = value("client_id")
         if expectedClientID == nil, clientID == nil { throw SignInError.registrationIncomplete }
-        if let expectedClientID, let clientID, clientID != expectedClientID { throw SignInError.clientMismatch }
+        if accountHeld, let expectedClientID, let clientID, clientID != expectedClientID {
+            throw SignInError.clientMismatch
+        }
         return Callback(code: code, state: expectedState, clientID: clientID)
     }
 
@@ -272,7 +279,9 @@ public final class ChatGPTSession {
     /// OpenAI's signing keys, fetched by the first sign-in to need them.
     private var jwks: JSON?
     /// The refresh in flight, which every caller of `validAccessToken` waits on, so a rotated token is used once.
-    private var refreshing: Task<String, any Error>?
+    private var refreshing: Task<ChatGPTAccount, any Error>?
+    /// Set while `signOut` runs: a token asked for meanwhile is refused, so no refresh rotates what it revokes.
+    private var signingOut = false
 
     public init(
         store: any ChatGPTAccountStore, transport: any HTTPTransport, log: Log, now: @escaping () -> Date = { .now },
@@ -306,19 +315,32 @@ public final class ChatGPTSession {
     }
 
     /// The callback URL the listener caught: exchanges the code, checks the ID token, keeps the account. Without the
-    /// plan grant the account is kept all the same, as OpenAI's errors page says, and `planNotGranted` is thrown.
+    /// plan grant the account is kept all the same, as OpenAI's errors page says, and `planNotGranted` is thrown. A
+    /// returning sign-in must come back as the account held (`differentAccount`), which is otherwise left as it was.
     public func complete(callback: URL, attempt: SignInAttempt, redirect: URL) async throws -> ChatGPTAccount {
+        let held = store.account
         let caught = try ChatGPTSignIn.parseCallback(
-            callback, expectedState: attempt.state, expectedClientID: store.clientID)
+            callback, expectedState: attempt.state, expectedClientID: store.clientID, accountHeld: held != nil)
         guard let clientID = caught.clientID ?? store.clientID else { throw SignInError.registrationIncomplete }
         // Kept before the exchange: when it fails, the next attempt reuses this registration instead of making another.
+        // After a sign-out a new registration replaces the kept one.
         store.clientID = clientID
         let reply = try await send(
             ChatGPTSignIn.exchangeRequest(code: caught.code, attempt: attempt, clientID: clientID, redirect: redirect))
-        let tokens = try TokenResponse.parse(reply.body, status: reply.status)
+        let tokens: TokenResponse
+        do {
+            tokens = try TokenResponse.parse(reply.body, status: reply.status)
+        } catch {
+            // OpenAI no longer knows this registration: the next sign-in registers the app again.
+            if case SignInError.tokenEndpoint(_, "invalid_client", _) = error { store.clientID = nil }
+            throw error
+        }
         let jwks = try await keys()
         let token = try ChatGPTSignIn.validate(
             idToken: tokens.idToken ?? "", jwks: jwks, clientID: clientID, nonce: attempt.nonce, now: now())
+        if let held, held.issuer != token.issuer || held.subject != token.subject {
+            throw SignInError.differentAccount
+        }
         let account = ChatGPTAccount(
             email: token.email ?? "", issuer: token.issuer, subject: token.subject, clientID: clientID,
             hostID: hostID(), idToken: tokens.idToken, accessToken: tokens.accessToken,
@@ -334,20 +356,20 @@ public final class ChatGPTSession {
     }
 
     /// The access token for a request, refreshed first when it expires within 60 s; `SignInError.signedOut` when the
-    /// refresh fails terminally (the account is then dropped, the registration kept).
-    public func validAccessToken() async throws -> String {
-        if let refreshing { return try await refreshing.value }
-        guard let account = store.account else { throw SignInError.signedOut }
-        guard account.expiresAt <= now().addingTimeInterval(60) else { return account.accessToken }
-        let refresh = Task { try await self.refresh(account) }
-        refreshing = refresh
-        defer { refreshing = nil }
-        return try await refresh.value
+    /// refresh fails terminally (the account is then dropped, the registration kept) or a sign-out is under way.
+    /// `forPlanUse` (a request on the plan) needs the plan grant, `SignInError.planNotGranted` without it; the model
+    /// list asks with `false`.
+    public func validAccessToken(forPlanUse: Bool = true) async throws -> String {
+        let account = try await freshAccount()
+        if forPlanUse, !account.mayUsePlan { throw SignInError.planNotGranted }
+        return account.accessToken
     }
 
     /// Revokes the refresh token, up to three tries on a 5xx or no answer, then drops the account either way; the
     /// registration stays.
     public func signOut() async -> SignOutResult {
+        signingOut = true
+        defer { signingOut = false }
         // A refresh in flight rotates the refresh token: revoke the one it leaves, after it has written it.
         _ = try? await refreshing?.value
         var result = SignOutResult.unconfirmed
@@ -368,9 +390,24 @@ public final class ChatGPTSession {
     /// Drops the account without revoking it (the API said the token is no longer valid); the registration stays.
     public func forget() { store.account = nil }
 
-    private func refresh(_ account: ChatGPTAccount) async throws -> String {
+    /// The account, refreshed first when its token expires within 60 s, through the one refresh in flight.
+    private func freshAccount() async throws -> ChatGPTAccount {
+        guard !signingOut else { throw SignInError.signedOut }
+        if let refreshing { return try await refreshing.value }
+        guard let account = store.account else { throw SignInError.signedOut }
+        guard account.expiresAt <= now().addingTimeInterval(60) else { return account }
+        let refresh = Task { try await self.refresh(account) }
+        refreshing = refresh
+        defer { refreshing = nil }
+        return try await refresh.value
+    }
+
+    private func refresh(_ account: ChatGPTAccount) async throws -> ChatGPTAccount {
         let reply = try await send(
             ChatGPTSignIn.refreshRequest(refreshToken: account.refreshToken, clientID: account.clientID))
+        // A sign-in, a sign-out or `forget` replaced or dropped the account meanwhile: this answer is about tokens no
+        // longer kept, and none of it is written.
+        guard store.account?.refreshToken == account.refreshToken else { throw SignInError.signedOut }
         if (200..<300).contains(reply.status), let tokens = try? TokenResponse.parse(reply.body) {
             // The access token, its expiry, the grant and the rotated refresh token are replaced together.
             var renewed = account
@@ -382,11 +419,13 @@ public final class ChatGPTSession {
             renewed.savedAt = now()
             store.account = renewed
             log.note("ai: chatgpt token refreshed")
-            return renewed.accessToken
+            return renewed
         }
-        if (400..<500).contains(reply.status), let error = (try? JSON.parse(reply.body))?["error"]?.string,
-           ChatGPTSignIn.terminalRefreshErrors.contains(error) {
+        let error = (400..<500).contains(reply.status) ? (try? JSON.parse(reply.body))?["error"]?.string : nil
+        if let error, error == "invalid_client" || ChatGPTSignIn.terminalRefreshErrors.contains(error) {
             store.account = nil
+            // `invalid_client`: OpenAI no longer knows this registration, so the next sign-in registers the app again.
+            if error == "invalid_client" { store.clientID = nil }
             throw SignInError.signedOut
         }
         // A passing failure keeps the tokens: they may well work on the next try.
