@@ -1159,6 +1159,15 @@ Repeat Step 1 and Step 3 on the iPhone; the saved conversation on the Mac is per
 
 Every correction becomes a code change with its test, `swift test` green, both builds green, and a commit `In-car corrections: <what changed>`. Record what the i4 answers on standard OBD in the design doc's "Left to the builder" section.
 
+- [ ] **Step 8: Failures, fetched pages, Stop and a model switch**
+
+Five checks; note what the chat and the Log show for each:
+1. Enter a wrong key first. The summary fails with `Failed: API error (authentication_error): …` under it and `Try again` above the input bar. Fix the key in Settings (the error clears), press `Try again`, and the summary streams in.
+2. Ask a question the mechanic answers from a fetched page (a `Fetched <url>` line in the activity). The page is among the numbered sources under the answer and opens.
+3. Press Stop during a round with several tool calls. No call runs after Stop (the Log shows no adapter command after it), the chat keeps the reads made so far and the text streamed, and the usage line says `Stopped`.
+4. Switch the model in Settings mid-conversation and ask again. Note whether the API accepts the old model's thinking blocks; if it refuses them, note the error: they then have to be stripped on a switch.
+5. Confirm the Log carries the API error text (`ai: error 401 authentication_error: …` from check 1) and never the key: `grep -c <the key's first 12 characters> ~/Documents/Vynscope/log.txt` prints 0.
+
 ---
 
 ## Spec coverage
