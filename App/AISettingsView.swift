@@ -162,7 +162,7 @@ struct AISettingsView: View {
             } else if ai.chatGPT?.mayUsePlan != true {
                 HStack {
                     ContinueWithChatGPT { Task { await ai.signInToChatGPT() } }
-                        .disabled(ai.signInPhase != .idle)
+                        .disabled(ai.signInPhase != .idle || ai.signingOut)
                     if ai.signInPhase == .waitingForBrowser {
                         Button("Cancel") { ai.cancelSignIn() }
                             .buttonStyle(.borderless)

@@ -343,6 +343,7 @@ final class AIFlow {
     func signOutOfChatGPT() async {
         signingOut = true
         defer { signingOut = false }
+        refusedAfterRenewal = false  // a refusal belongs to the sign-in it happened in
         let held = session.account != nil
         let result = await session.signOut()
         if !held { session.dropRegistration() }
