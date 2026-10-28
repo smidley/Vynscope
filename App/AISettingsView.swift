@@ -143,7 +143,7 @@ struct AISettingsView: View {
     }
 
     /// The ChatGPT sign-in: Continue with ChatGPT, which a sign-in without plan usage shows again, Cancel while it
-    /// waits for the browser, and the account with Sign out.
+    /// waits for the browser, `Completing sign-in…` once the redirect is in, and the account with Sign out.
     private var chatGPTSection: some View {
         Section("ChatGPT") {
             if let account = ai.chatGPT {
@@ -155,19 +155,23 @@ struct AISettingsView: View {
                         .foregroundStyle(Color.vynMuted)
                 }
             }
-            if ai.chatGPT?.mayUsePlan != true {
+            if ai.signInPhase == .completing {
+                Text("Completing sign-in…")
+            } else if ai.chatGPT?.mayUsePlan != true {
                 HStack {
                     ContinueWithChatGPT { Task { await ai.signInToChatGPT() } }
-                        .disabled(ai.signingIn)
-                    if ai.signingIn {
+                        .disabled(ai.signInPhase != .idle)
+                    if ai.signInPhase == .waitingForBrowser {
                         Button("Cancel") { ai.cancelSignIn() }
                             .buttonStyle(.borderless)
                     }
                 }
             }
             if ai.chatGPT != nil {
-                Button("Sign out", role: .destructive) { Task { await ai.signOutOfChatGPT() } }
-                    .disabled(ai.signingIn)
+                Button(ai.signingOut ? "Signing out…" : "Sign out", role: .destructive) {
+                    Task { await ai.signOutOfChatGPT() }
+                }
+                .disabled(ai.signInPhase != .idle || ai.signingOut)
             }
             errorLine
         }

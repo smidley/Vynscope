@@ -65,6 +65,16 @@ final class AIFlow {
         case answering
     }
 
+    /// Where a sign-in to ChatGPT is.
+    enum SignInPhase {
+        /// None runs.
+        case idle
+        /// The sign-in page is open and the redirect awaited, which Cancel ends.
+        case waitingForBrowser
+        /// The redirect is in: the account is stored and the model list loaded.
+        case completing
+    }
+
     private(set) var phase = Phase.idle
     private(set) var conversation: Conversation?
     /// The assistant text of the turn in progress.
@@ -76,8 +86,9 @@ final class AIFlow {
     private(set) var hasKey: Bool
     /// The ChatGPT sign-in, as kept in the Keychain.
     private(set) var chatGPT: ChatGPTAccount?
-    /// A sign-in waits for the browser or completes.
-    private(set) var signingIn = false
+    private(set) var signInPhase = SignInPhase.idle
+    /// A sign-out runs, from asking OpenAI to revoke the sign-in until it is forgotten here.
+    private(set) var signingOut = false
     /// The sign-in page, which the iPhone shows in a Safari sheet while this is set.
     var signInURL: URL?
     /// The models the ChatGPT account lists: the id the API takes, then the name shown.
@@ -252,15 +263,15 @@ final class AIFlow {
     /// ends. Then completes the sign-in, loads the model list and, the first time, shows the welcome. The sign-in
     /// page's URL is never logged.
     func signInToChatGPT() async {
-        guard !signingIn else { return }
-        signingIn = true
+        guard signInPhase == .idle else { return }
+        signInPhase = .waitingForBrowser
         error = nil
         let listener = LoopbackListener()
         defer {
             listener.stop()
             signInTask = nil
             signInURL = nil
-            signingIn = false
+            signInPhase = .idle
         }
         let redirect: URL
         do {
@@ -282,6 +293,7 @@ final class AIFlow {
             // The redirect is in: the Safari sheet goes, and its dismissal or Cancel no longer ends anything.
             signInTask = nil
             signInURL = nil
+            signInPhase = .completing
             #if os(macOS)
             ChatGPTBrowser.returnToApp()
             #endif
@@ -325,6 +337,8 @@ final class AIFlow {
     /// Revokes the ChatGPT sign-in at OpenAI and forgets it here, confirmed or not. When the session held no account
     /// (the row was stale), the registration is dropped too, and the next sign-in registers the app again.
     func signOutOfChatGPT() async {
+        signingOut = true
+        defer { signingOut = false }
         let held = session.account != nil
         let result = await session.signOut()
         if !held { session.dropRegistration() }
