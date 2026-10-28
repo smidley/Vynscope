@@ -1,7 +1,7 @@
 import Testing
 @testable import BMWCodingCore
 
-func assemble(_ text: String) throws -> (AssistantMessage, [StreamUpdate]) {
+private func assemble(_ text: String) throws -> (AssistantMessage, [StreamUpdate]) {
     var parser = SSEParser(), assembler = StreamAssembler(), updates: [StreamUpdate] = []
     for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
         guard let event = parser.feed(String(line)) else { continue }

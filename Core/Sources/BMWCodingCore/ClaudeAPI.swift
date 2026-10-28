@@ -1,14 +1,17 @@
 import Foundation
 
-/// What requests to the Messages API used, in tokens and in server-side tool calls, for the usage line and the
-/// cost estimate. A turn's usage is the sum of its requests'.
-public struct Usage: Codable, Equatable, Sendable {
+/// What requests to the Messages or Responses API used, in tokens and in server-side tool calls, for the usage line
+/// and the cost estimate. A turn's usage is the sum of its requests'. Its equality is nonisolated, so that an error
+/// carrying it, `OpenAIError.planLimit`, can compare.
+public struct Usage: Codable, nonisolated Equatable, Sendable {
     public var inputTokens: Int
     public var outputTokens: Int
     public var cacheCreationInputTokens: Int
     public var cacheReadInputTokens: Int
     public var webSearchRequests: Int
     public var webFetchRequests: Int
+    /// Of `outputTokens`, those the model spent reasoning; only the Responses API reports them.
+    public var reasoningTokens: Int
 
     public static let zero = Usage(
         inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0,
@@ -16,7 +19,7 @@ public struct Usage: Codable, Equatable, Sendable {
 
     public init(
         inputTokens: Int, outputTokens: Int, cacheCreationInputTokens: Int, cacheReadInputTokens: Int,
-        webSearchRequests: Int, webFetchRequests: Int
+        webSearchRequests: Int, webFetchRequests: Int, reasoningTokens: Int = 0
     ) {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
@@ -24,11 +27,26 @@ public struct Usage: Codable, Equatable, Sendable {
         self.cacheReadInputTokens = cacheReadInputTokens
         self.webSearchRequests = webSearchRequests
         self.webFetchRequests = webFetchRequests
+        self.reasoningTokens = reasoningTokens
+    }
+
+    /// Reads a usage as a `TurnRecord` was saved; one saved before there was `reasoningTokens` has none, which is 0.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        inputTokens = try container.decode(Int.self, forKey: .inputTokens)
+        outputTokens = try container.decode(Int.self, forKey: .outputTokens)
+        cacheCreationInputTokens = try container.decode(Int.self, forKey: .cacheCreationInputTokens)
+        cacheReadInputTokens = try container.decode(Int.self, forKey: .cacheReadInputTokens)
+        webSearchRequests = try container.decode(Int.self, forKey: .webSearchRequests)
+        webFetchRequests = try container.decode(Int.self, forKey: .webFetchRequests)
+        reasoningTokens = try container.decodeIfPresent(Int.self, forKey: .reasoningTokens) ?? 0
     }
 
     /// The usage object of a Messages response or stream event: `input_tokens`, `output_tokens`,
     /// `cache_creation_input_tokens`, `cache_read_input_tokens` and, inside `server_tool_use`, `web_search_requests`
-    /// and `web_fetch_requests`. A key it lacks is 0.
+    /// and `web_fetch_requests`; or of a Responses response, whose `input_tokens_details.cached_tokens` and
+    /// `output_tokens_details.reasoning_tokens` are read as `cacheReadInputTokens` and `reasoningTokens`. A key it
+    /// lacks is 0.
     public init(_ json: JSON) {
         self = .zero
         update(from: json)
@@ -40,7 +58,8 @@ public struct Usage: Codable, Equatable, Sendable {
             cacheCreationInputTokens: a.cacheCreationInputTokens + b.cacheCreationInputTokens,
             cacheReadInputTokens: a.cacheReadInputTokens + b.cacheReadInputTokens,
             webSearchRequests: a.webSearchRequests + b.webSearchRequests,
-            webFetchRequests: a.webFetchRequests + b.webFetchRequests)
+            webFetchRequests: a.webFetchRequests + b.webFetchRequests,
+            reasoningTokens: a.reasoningTokens + b.reasoningTokens)
     }
 
     /// Replaces the fields `json` carries and keeps the others: the usage of a `message_delta` is cumulative, but may
@@ -49,9 +68,12 @@ public struct Usage: Codable, Equatable, Sendable {
         inputTokens = json?["input_tokens"]?.int ?? inputTokens
         outputTokens = json?["output_tokens"]?.int ?? outputTokens
         cacheCreationInputTokens = json?["cache_creation_input_tokens"]?.int ?? cacheCreationInputTokens
-        cacheReadInputTokens = json?["cache_read_input_tokens"]?.int ?? cacheReadInputTokens
+        cacheReadInputTokens =
+            json?["cache_read_input_tokens"]?.int ?? json?["input_tokens_details"]?["cached_tokens"]?.int
+            ?? cacheReadInputTokens
         webSearchRequests = json?["server_tool_use"]?["web_search_requests"]?.int ?? webSearchRequests
         webFetchRequests = json?["server_tool_use"]?["web_fetch_requests"]?.int ?? webFetchRequests
+        reasoningTokens = json?["output_tokens_details"]?["reasoning_tokens"]?.int ?? reasoningTokens
     }
 }
 
