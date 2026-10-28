@@ -307,14 +307,21 @@ final class AIFlow {
         }
     }
 
-    /// Ends the wait for the sign-in's redirect, and with it the listener; nothing once the redirect is in.
+    /// Ends the wait for the sign-in's redirect, and with it the listener; nothing once the redirect is in. With no
+    /// account held, a sign-in that got no redirect may have stopped at a registration OpenAI no longer knows: the
+    /// registration is dropped, and the next sign-in registers the app again.
     func cancelSignIn() {
-        signInTask?.cancel()
+        guard let signInTask else { return }
+        signInTask.cancel()
+        if chatGPT == nil { session.dropRegistration() }
     }
 
-    /// Revokes the ChatGPT sign-in at OpenAI and forgets it here, confirmed or not.
+    /// Revokes the ChatGPT sign-in at OpenAI and forgets it here, confirmed or not. When the session held no account
+    /// (the row was stale), the registration is dropped too, and the next sign-in registers the app again.
     func signOutOfChatGPT() async {
+        let held = session.account != nil
         let result = await session.signOut()
+        if !held { session.dropRegistration() }
         chatGPT = nil
         openAIModels = []
         error = result == .unconfirmed
@@ -344,7 +351,10 @@ final class AIFlow {
         }
         let body = try? JSON.parse(reply.body)
         guard (200..<300).contains(reply.status), let entries = body?["data"]?.array else {
-            error = "Could not load the model list: \(body?["error"]?["message"]?.string ?? "HTTP \(reply.status)")"
+            let failure = body?["error"], message = failure?["message"]?.string
+            error = reply.status == 403 && failure?["code"]?.string == "subscription_sharing_user_not_eligible"
+                ? Self.notEligible(message ?? "")
+                : "Could not load the model list: \(message ?? "HTTP \(reply.status)")"
             return
         }
         let listed = entries.contains { $0["visibility"] != nil }
@@ -425,8 +435,9 @@ final class AIFlow {
     /// Anthropic's on the API key, OpenAI's on the ChatGPT plan. Streams its text into `streaming` and its reads and
     /// lookups into `activity`, then records the turn with what its requests used and its activity. A stop, and the
     /// plan's usage limit, keep the text streamed so far; an error keeps the conversation as it was before the answer
-    /// and records the error. Either way the conversation is saved, never holds a tool call without its result, and is
-    /// ready for the next message, also when the turn could not start.
+    /// and records the error. A token OpenAI refuses is renewed before the sign-in is given up. Either way the
+    /// conversation is saved, never holds a tool call without its result, and is ready for the next message, also when
+    /// the turn could not start.
     private func runTurn(effort: String) async {
         guard var conversation else { return }
         defer { phase = .ready }
@@ -505,6 +516,11 @@ final class AIFlow {
                     messageIndex: ownerMessage, usage: usage, rounds: 0, refused: false, truncated: false,
                     stoppedAtRoundCap: false, stopped: true, model: model, activity: activity, provider: provider))
             } catch {
+                var error = error
+                // A refused token is renewed first: a new sign-in is asked for only when renewing fails for good.
+                if case OpenAIError.unauthorized = error {
+                    do { _ = try await session.renew() } catch let renewal { error = renewal }
+                }
                 let text: String
                 switch error {
                 case ClaudeError.api(_, let type, let message): text = "API error (\(type)): \(message)"
@@ -517,16 +533,17 @@ final class AIFlow {
                     text = "Usage limit reached"
                 case OpenAIError.planLimit("subscription_sharing_usage_unavailable", _, _):
                     text = "ChatGPT couldn't check your plan's usage; try again in a moment"
+                case OpenAIError.api(403?, "subscription_sharing_user_not_eligible", let message, _):
+                    text = Self.notEligible(message)  // not tried again: the account, not the request, is refused
                 case OpenAIError.api(_, let code, let message, _), OpenAIError.planLimit(let code, let message, _):
                     text = "API error (\(code)): \(message)"
                 case OpenAIError.unauthorized:
-                    session.forget()
-                    chatGPT = nil
-                    text = "Sign in to ChatGPT again in Settings"
+                    text = "OpenAI refused the request; try again"  // renewed: Try again sends the new token
                 case OpenAIError.network(let message), SignInError.network(let message):
                     text = "No connection to OpenAI: \(message)"
                 case SignInError.signedOut:
-                    // The session dropped the sign-in, or a sign-in that completed meanwhile replaced it.
+                    // The session dropped the sign-in (a renewal that failed for good among the ways), or a sign-in
+                    // that completed meanwhile replaced it.
                     chatGPT = session.account
                     text = chatGPT == nil
                         ? "Sign in to ChatGPT again in Settings" : "The ChatGPT sign-in changed; try again"
@@ -542,7 +559,13 @@ final class AIFlow {
                     stoppedAtRoundCap: false, stopped: false, model: model, error: text, activity: activity,
                     provider: provider))
             }
-            if let openAI { webSearchUnavailable = openAI.webSearchUnavailable }
+            if let openAI {
+                // The model refused web search during the turn: a stopped or failed turn says so too.
+                if !webSearchUnavailable.contains(model), openAI.webSearchUnavailable.contains(model) {
+                    conversation.turns[conversation.turns.count - 1].webSearchDropped = true
+                }
+                webSearchUnavailable = openAI.webSearchUnavailable
+            }
             self.conversation = conversation
             // The turn is in the conversation now; the next one starts from nothing, even before it runs.
             streaming = ""
@@ -589,6 +612,13 @@ final class AIFlow {
         if !text.isEmpty {
             conversation.messages.append(Self.assistantTextMessage(text, provider: conversation.provider))
         }
+    }
+
+    /// What an account OpenAI does not let share its plan with other apps (`subscription_sharing_user_not_eligible`)
+    /// is told, with OpenAI's `message`.
+    private static func notEligible(_ message: String) -> String {
+        "This ChatGPT account may not use its plan in other apps (\(message)). "
+            + "Pick Anthropic in Settings to use the mechanic."
     }
 
     /// The model a turn with `provider` runs on: the Anthropic model, or the OpenAI model picked from the account's

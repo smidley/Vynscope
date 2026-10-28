@@ -103,9 +103,9 @@ struct AISettingsView: View {
             }
             .onChange(of: ai.settings) { ai.saveSettings() }
             .onChange(of: ai.settings.provider) { Task { await ai.switchProvider() } }
-            // When the sheet opens, and when OpenAI is picked in it.
+            // Every time the sheet opens, and when OpenAI is picked in it: the account's models may have changed.
             .task(id: ai.settings.provider) {
-                if ai.settings.provider == .openai, ai.chatGPT != nil, ai.openAIModels.isEmpty {
+                if ai.settings.provider == .openai, ai.chatGPT != nil {
                     await ai.loadOpenAIModels()
                 }
             }
