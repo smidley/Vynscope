@@ -65,12 +65,13 @@ final class AIFlow {
         hasKey = Keychain.apiKey() != nil
     }
 
-    /// Opens the conversation saved for the connected car, or runs the health check when there is none. Does nothing
-    /// without a key, without a connected car whose VIN was read, or while a check or a turn runs.
+    /// Opens the conversation saved for the connected car or, when there is none and a key is saved, runs the health
+    /// check. Does nothing without a connected car whose VIN was read, or while a check or a turn runs.
     func enter() async {
-        guard hasKey, flow.diag != nil, let vin = flow.vin, phase == .idle || phase == .ready else { return }
+        guard flow.diag != nil, let vin = flow.vin, phase == .idle || phase == .ready else { return }
         if conversation?.vin != vin { conversation = store.load(vin: vin) }
-        if conversation == nil { await healthCheck() } else { phase = .ready }
+        phase = conversation == nil ? .idle : .ready
+        if conversation == nil, hasKey { await healthCheck() }
     }
 
     /// Reads every module's fault codes and standard OBD-II, starts a conversation from what it found, and has the

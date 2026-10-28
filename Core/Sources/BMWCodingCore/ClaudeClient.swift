@@ -80,6 +80,12 @@ public struct ToolCall: Equatable, Sendable {
     public var id: String
     public var name: String
     public var input: JSON
+
+    public init(id: String, name: String, input: JSON) {
+        self.id = id
+        self.name = name
+        self.input = input
+    }
 }
 
 /// What a tool answers the model; a tool that fails in the ordinary way answers with `isError` instead of throwing.
