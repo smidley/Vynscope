@@ -57,6 +57,8 @@ public struct ChatGPTAccount: Codable, Equatable, Sendable {
 public enum SignInError: Error, Equatable {
     /// The owner declined in the browser (`error=access_denied`).
     case denied
+    /// The browser came back with an `error` other than `access_denied`: it, and its `error_description` when given.
+    case callbackError(code: String, description: String?)
     case stateMismatch
     case missingCode
     /// A first sign-in's callback carried no issued client id.
@@ -135,7 +137,7 @@ public enum ChatGPTSignIn {
         return components.url!
     }
 
-    /// The redirect checked as OpenAI's sign-in page orders it: the state first, then a refusal, then the code and the
+    /// The redirect checked as OpenAI's sign-in page orders it: the state first, then an error, then the code and the
     /// client id. A later sign-in's callback may leave the client id out, which keeps the expected one. Another client
     /// id is `clientMismatch` while an account is held; with none held (after a sign-out) it is a new registration.
     public static func parseCallback(
@@ -144,7 +146,10 @@ public enum ChatGPTSignIn {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         let value = { (name: String) in items.first { $0.name == name }?.value }
         guard value("state") == expectedState else { throw SignInError.stateMismatch }
-        if value("error") == "access_denied" { throw SignInError.denied }
+        if let error = value("error") {
+            if error == "access_denied" { throw SignInError.denied }
+            throw SignInError.callbackError(code: error, description: value("error_description"))
+        }
         guard let code = value("code") else { throw SignInError.missingCode }
         let clientID = value("client_id")
         if expectedClientID == nil, clientID == nil { throw SignInError.registrationIncomplete }

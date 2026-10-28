@@ -47,6 +47,15 @@ let attempt = SignInAttempt(verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEj
     #expect(try ChatGPTSignIn.parseCallback(URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=st4te")!, expectedState: "st4te", expectedClientID: "oaiapp_abc").clientID == nil)
 }
 
+@Test func everyCallbackErrorIsReported() {
+    let parse = { (query: String) in
+        try ChatGPTSignIn.parseCallback(URL(string: "http://127.0.0.1:1455/auth/callback?\(query)&state=st4te")!, expectedState: "st4te", expectedClientID: nil)
+    }
+    #expect(throws: SignInError.callbackError(code: "server_error", description: "Try later")) { try parse("error=server_error&error_description=Try%20later") }
+    #expect(throws: SignInError.callbackError(code: "temporarily_unavailable", description: nil)) { try parse("error=temporarily_unavailable") }
+    #expect(throws: SignInError.denied) { try parse("error=access_denied") }
+}
+
 @Test func theTokenRequestsAreFormEncodedWithoutASecret() throws {
     let exchange = ChatGPTSignIn.exchangeRequest(code: "c0de", attempt: attempt, clientID: "oaiapp_abc", redirect: redirect)
     #expect(exchange.url == ChatGPT.tokenEndpoint && exchange.httpMethod == "POST")
