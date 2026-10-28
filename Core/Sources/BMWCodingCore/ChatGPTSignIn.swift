@@ -422,6 +422,11 @@ public final class ChatGPTSession {
         if let refreshing { return try await refreshing.value }
         guard let account = store.account else { throw SignInError.signedOut }
         guard renewing || account.expiresAt <= now().addingTimeInterval(60) else { return account }
+        // No refresh token (the exchange gave none): it ends as a terminal refresh error does, with no request.
+        guard !account.refreshToken.isEmpty else {
+            store.account = nil
+            throw SignInError.signedOut
+        }
         let refresh = Task { try await self.refresh(account) }
         refreshing = refresh
         defer { refreshing = nil }

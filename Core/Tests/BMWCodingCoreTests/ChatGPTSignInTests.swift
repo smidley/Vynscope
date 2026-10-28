@@ -433,3 +433,19 @@ func heldAccount(subject: String = "sub", scopes: [String] = [ChatGPT.planScope]
     await #expect(throws: SignInError.invalidIDToken("nonce")) { try await signIn(nonce: "other") }
     #expect(keyRequests() == 3 && transport.requests.count == 7)
 }
+
+@Test func anAccountWithoutARefreshTokenSignsOutWithoutARequest() async throws {
+    let store = MemoryAccountStore()
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"
+    var account = heldAccount()
+    account.refreshToken = ""  // the exchange's answer carried none
+    store.account = account
+    // Answers for refreshes, so that one sent shows in the count instead of stopping the run.
+    let transport = FakeHTTPTransport([reply(200, renewedJSON), reply(200, renewedJSON)])
+    let expired = session(store, transport, now: Date(timeIntervalSince1970: 1_800_010_000))
+    await #expect(throws: SignInError.signedOut) { try await expired.validAccessToken() }
+    #expect(transport.requests.isEmpty && store.account == nil && store.clientID == "oaiapp_abc")
+    store.account = account
+    await #expect(throws: SignInError.signedOut) { try await expired.renew() }
+    #expect(transport.requests.isEmpty && store.account == nil)
+}
