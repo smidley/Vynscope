@@ -273,3 +273,24 @@ func healthCheckStopsAtTheNextRequestAfterACancel(command: String) async throws 
     let check = try await Mechanic(diag: Diag(link: link, log: Log()), car: testCar(), log: Log()).healthCheck { _ in }
     #expect(check.obd == HealthCheck.OBDHealth(storedCodes: [:], pendingCodes: [:], supportedPIDs: ["7E8": []], values: [:]))
 }
+@Test func aCancelledToolCallSendsNothing() async throws {
+    let link = FakeLink { _ in ["OK"] }
+    let mechanic = Mechanic(diag: Diag(link: link, log: Log()), car: testCar(), log: Log())
+    let call = Task { try await mechanic.run(ToolCall(id: "t", name: "read_faults", input: .object(["module": .string("40")]))) }
+    call.cancel()  // Stop pressed between two tool calls of one round
+    await #expect(throws: CancellationError.self) { try await call.value }
+    #expect(link.sent.isEmpty)
+}
+@Test func aLinkErrorInTheStandardOBDPartKeepsTheModules() async throws {
+    let link = FakeLink { cmd in
+        switch cmd {
+        case "40 03 19 02 FF 00 00 00": return ["640 F1 07 59 02 FF 80 1E 2B 2F"]
+        case "03": return ["CAN ERROR"]
+        default: return cmd.hasPrefix("AT") ? ["OK"] : ["NO DATA"] } }
+    let check = try await Mechanic(diag: Diag(link: link, log: Log()), car: testCar(), log: Log()).healthCheck { _ in }
+    #expect(check.modules.map(\.address) == ["01", "40", "56"])
+    #expect(check.modules[1].faults == [HealthCheck.Fault(code: "801E2B", status: "2F")])
+    #expect(check.obd == nil && check.obdError == "CAN ERROR")
+    #expect(check.contextJSON.contains(#""obdError" : "CAN ERROR""#))
+    #expect(link.sent.last == "03")  // the check ended there
+}

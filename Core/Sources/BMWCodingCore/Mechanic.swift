@@ -26,8 +26,11 @@ public struct HealthCheck: Codable, Equatable, Sendable {
     public var chassis: String?
     public var adapter: Adapter
     public var modules: [ModuleHealth]
-    /// `nil` when no controller answered any standard request.
+    /// `nil` when no controller answered any standard request, or when the adapter failed during them.
     public var obd: OBDHealth?
+    /// How the adapter failed during the standard requests, which ended them: its error line, `timeout` or
+    /// `disconnected`. `nil` when they ran through.
+    public var obdError: String?
     public var backup: BackupSummary?
     /// When the check ran: ISO 8601, UTC, whole seconds.
     public var readAt: String
@@ -149,8 +152,10 @@ public final class Mechanic {
 
     /// Runs one tool call. An input that does not pass the checks, an unknown tool, a module that refuses or does
     /// not answer, and a read over the cap all answer with `isError`; only what `Diag` throws (`LinkError`, a
-    /// cancel) is thrown.
+    /// cancel) is thrown. A call that comes after a cancel throws `CancellationError` before anything is checked,
+    /// logged or sent, so Stop also holds between the calls of one round.
     public func run(_ call: ToolCall) async throws -> ToolResult {
+        try Task.checkCancellation()
         log.note("ai: tool \(call.name) \(String(decoding: call.input.encoded(), as: UTF8.self))")
         let result: ToolResult
         do {
@@ -165,7 +170,8 @@ public final class Mechanic {
 
     /// The health check a conversation starts from: every module's fault codes, in order, then standard OBD-II,
     /// with `progress` told each step. A module that refuses or does not answer is recorded and the check goes on;
-    /// a `LinkError` or a cancel ends it and is thrown.
+    /// a `LinkError` during the module reads, or a cancel anywhere, ends it and is thrown. A `LinkError` during the
+    /// standard requests ends only them: the check keeps the modules and says why in `obdError`.
     public func healthCheck(progress: (String) -> Void) async throws -> HealthCheck {
         var modules: [HealthCheck.ModuleHealth] = []
         for module in car.modules {
@@ -173,10 +179,20 @@ public final class Mechanic {
             progress("Reading fault codes from \(Self.name(of: module)) …")
             modules.append(try await health(of: module))
         }
-        let obd = try await standardOBD(progress: progress)
+        var obd: HealthCheck.OBDHealth?, obdError: String?
+        do {
+            obd = try await standardOBD(progress: progress)
+        } catch let error as LinkError {
+            obdError = switch error {
+            case .adapterError(let line): line
+            case .timeout: "timeout"
+            case .disconnected: "disconnected"
+            }
+        }
         return HealthCheck(
             vin: car.vin, nickname: car.nickname, chassis: Self.chassis(forVIN: car.vin),
             adapter: .init(model: car.adapter.model, firmware: car.adapter.firmware), modules: modules, obd: obd,
+            obdError: obdError,
             backup: car.latestBackup.map { .init(date: $0.date.formatted(.iso8601), modules: $0.modules.count) },
             readAt: Date.now.formatted(.iso8601))
     }
