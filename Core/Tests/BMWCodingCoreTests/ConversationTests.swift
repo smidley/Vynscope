@@ -278,6 +278,27 @@ private let stageOneConversation = """
     #expect(!FileManager.default.fileExists(atPath: conversations.appendingPathComponent("WBY73AW04RFFAKE19.json").path))
 }
 
+@Test func deletingAllOfAnthropicsRemovesTheStageOneFilesFirst() throws {
+    let folder = temporaryFolder()
+    let conversations = folder.appendingPathComponent("Conversations")
+    let cars = ["WBY73AW04RFFAKE19", "WBA00000000FAKE01", "WBA00000000FAKE02"]
+    let own = { (vin: String) in conversations.appendingPathComponent("\(vin)-anthropic.json").path }
+    defer {
+        for vin in cars { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: own(vin)) }
+        try? FileManager.default.removeItem(at: folder)
+    }
+    let store = ConversationStore(directory: folder)
+    for vin in cars {
+        try store.save(Conversation(vin: vin, started: Date(timeIntervalSince1970: 1_793_000_000), model: "claude-opus-5-5", carContext: "{}"))
+        try Data(stageOneConversation.utf8).write(to: conversations.appendingPathComponent("\(vin).json"))
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: own(vin))
+    }
+    // No car's own file can be removed: the delete fails, with every stage-1 file gone already, in whatever order the
+    // folder lists the files.
+    #expect(throws: (any Error).self) { try store.deleteAll(provider: .anthropic) }
+    #expect(cars.allSatisfy { !FileManager.default.fileExists(atPath: conversations.appendingPathComponent("\($0).json").path) })
+}
+
 // What the brief's tests above do not isolate: the turn's own new fields, which its custom decoder reads.
 
 @Test func aTurnKeepsItsProviderAndWhetherWebSearchWasDropped() throws {

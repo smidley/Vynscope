@@ -154,11 +154,13 @@ public struct ConversationStore {
     }
 
     /// Removes every car's conversation with `provider`: the files `<vin>-<provider>.json`, and for Anthropic's the
-    /// files of before there were providers, `<vin>.json`. The other provider's files stay. The folder's being missing
-    /// is not an error.
+    /// files of before there were providers, `<vin>.json`, first, as `delete` does. The other provider's files stay.
+    /// The folder's being missing is not an error.
     public func deleteAll(provider: Provider) throws {
         guard FileManager.default.fileExists(atPath: folder.path) else { return }
+        // The folder lists its files in no fixed order: the names without a dash go first.
         for url in try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            .sorted(by: { !$0.lastPathComponent.contains("-") && $1.lastPathComponent.contains("-") })
         where url.pathExtension == "json" {
             let name = url.deletingPathExtension().lastPathComponent
             // A VIN has no dash, so a name without one is a file of before there were providers.
