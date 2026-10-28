@@ -412,9 +412,11 @@ func heldAccount(subject: String = "sub", scopes: [String] = [ChatGPT.planScope]
     let k1 = try #require(signedIDToken.jwks["keys"]?.array?.first)
     let rotated = tokenJSON.replacingOccurrences(of: signedIDToken.jwt, with: signedIDToken.rotatedJWT)
     let store = MemoryAccountStore()
+    // The last answer is spare, so that a fetch where none is due shows in the count instead of stopping the run.
     let transport = FakeHTTPTransport([
         reply(200, tokenJSON), keysAnswer(k1), reply(200, rotated), keysAnswer(signedIDToken.rotatedKey),
         reply(200, tokenJSON), keysAnswer(signedIDToken.rotatedKey), reply(200, rotated),
+        keysAnswer(signedIDToken.rotatedKey),
     ])
     let session = session(store, transport)
     func signIn(nonce: String = "n0nce") async throws -> ChatGPTAccount {
