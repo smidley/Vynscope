@@ -45,10 +45,10 @@ public extension ELM {
         "ATSH 6F1", "ATFCSH 6F1", "ATFCSD 00 30 00 00", "ATFCSM 1",
     ]
 
-    /// Standard OBD-II addressing, sent by `Diag.obd` when the adapter is set up for BMW's; every command must
-    /// answer `OK`. Auto-formatting on and its automatic flow-control mode (the adapter builds the ISO-TP frames
-    /// and sends the flow control itself), every reply id accepted again, and the functional request header
-    /// `7DF`, which every controller listens to. First guess, to be confirmed on the car.
+    /// Standard OBD-II addressing, sent by `Diag.obd` when the adapter is not known to be in it; every command
+    /// must answer `OK`. Auto-formatting on and its automatic flow-control mode (the adapter builds the ISO-TP
+    /// frames and sends the flow control itself), every reply id accepted again, and the functional request
+    /// header `7DF`, which every controller listens to. First guess, to be confirmed on the car.
     static let obdSequence = ["ATCAF1", "ATFCSM 0", "ATAR", "ATSH 7DF"]
 
     /// The way back from `obdSequence` (also a first guess), sent by `Diag.select`; every command must answer

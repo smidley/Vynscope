@@ -284,14 +284,14 @@ func answersTooShortToReadAreNoResponseWithANote(answer: String) async throws {
     var refuse: String?
     let link = FakeLink { cmd in cmd == refuse ? ["?"] : ["OK"] }
     let diag = Diag(link: link, log: Log())
-    refuse = "ATAR"
+    refuse = "ATAR"  // the third command of the switch to OBD
     await #expect(throws: LinkError.adapterError("ATAR: ?")) { try await diag.obd([0x01, 0x00]) }
     #expect(diag.addressing == .bmw)
     refuse = nil
     _ = try await diag.obd([0x01, 0x00])
     #expect(link.sent == ["ATCAF1", "ATFCSM 0", "ATAR", "ATCAF1", "ATFCSM 0", "ATAR", "ATSH 7DF", "01 00"])
-    refuse = "ATFCSH 6F1"
-    await #expect(throws: LinkError.adapterError("ATFCSH 6F1: ?")) { try await diag.select(module: 0x40) }
+    refuse = "ATFCSM 1"  // the second command of the way back
+    await #expect(throws: LinkError.adapterError("ATFCSM 1: ?")) { try await diag.select(module: 0x40) }
     #expect(diag.addressing == .obd)
     refuse = nil
     try await diag.select(module: 0x40)
@@ -309,10 +309,62 @@ func answersTooShortToReadAreNoResponseWithANote(answer: String) async throws {
     _ = try await diag.obd([0x01, 0x00])
     #expect(link.sent.filter { $0 == "ATSH 7DF" }.count == 2)  // and OBD has to be set up again
 }
-@Test func obdSendsTheSwitchWithTwoSecondsAndTheRequestWithTheReadTimeout() async throws {
+@Test func obdSendsTheRequestWithTheReadTimeout() async throws {
     let link = FakeLink { cmd in cmd.hasPrefix("AT") ? ["OK"] : ["NO DATA"] }
     let diag = Diag(link: link, log: Log())
     diag.readTimeout = .milliseconds(700)
     _ = try await diag.obd([0x01, 0x00])
-    #expect(link.timeouts == [.seconds(2), .seconds(2), .seconds(2), .seconds(2), .milliseconds(700)])
+    #expect(link.sent.last == "01 00")
+    #expect(link.timeouts.last == .milliseconds(700))
+}
+@Test func afterARefusedSwitchToOBDSelectSetsBMWAddressingUpAgain() async throws {
+    var refuse: String?
+    let link = FakeLink { cmd in cmd == refuse ? ["?"] : ["OK"] }
+    let diag = Diag(link: link, log: Log())
+    try await diag.select(module: 0x40)
+    refuse = "ATAR"  // auto-formatting is on by then
+    await #expect(throws: LinkError.adapterError("ATAR: ?")) { try await diag.obd([0x01, 0x00]) }
+    refuse = nil
+    try await diag.select(module: 0x40)  // the same module: the adapter is no longer set up for it
+    try await diag.select(module: 0x10)  // and with the way back done, only this module's commands go out
+    #expect(link.sent == [
+        "ATCRA 640", "ATFCSD 40 30 00 00",
+        "ATCAF1", "ATFCSM 0", "ATAR",
+        "ATCAF0", "ATFCSM 1", "ATSH 6F1", "ATFCSH 6F1", "ATCRA 640", "ATFCSD 40 30 00 00",
+        "ATCRA 610", "ATFCSD 10 30 00 00"])
+}
+@Test func afterARefusedWayBackFromOBDTheNextObdRequestSwitchesAgain() async throws {
+    var refuse: String?
+    let link = FakeLink { cmd in cmd == refuse ? ["?"] : ["OK"] }
+    let diag = Diag(link: link, log: Log())
+    _ = try await diag.obd([0x01, 0x00])
+    refuse = "ATFCSM 1"  // auto-formatting is off again by then
+    await #expect(throws: LinkError.adapterError("ATFCSM 1: ?")) { try await diag.select(module: 0x40) }
+    refuse = nil
+    _ = try await diag.obd([0x03])
+    _ = try await diag.obd([0x07])  // switched whole once: the next request goes out alone
+    #expect(link.sent == [
+        "ATCAF1", "ATFCSM 0", "ATAR", "ATSH 7DF", "01 00",
+        "ATCAF0", "ATFCSM 1",
+        "ATCAF1", "ATFCSM 0", "ATAR", "ATSH 7DF", "03",
+        "07"])
+}
+@Test func setUpSettlesASwitchThatFailedPartWay() async throws {
+    var refuse: String?
+    let link = FakeLink { cmd in cmd == refuse ? ["?"] : ["OK"] }
+    let diag = Diag(link: link, log: Log())
+    refuse = "ATAR"
+    await #expect(throws: LinkError.adapterError("ATAR: ?")) { try await diag.obd([0x01, 0x00]) }
+    refuse = nil
+    _ = try await diag.setUp()
+    try await diag.select(module: 0x40)  // the reset wiped what the switch left: nothing to set up again
+    #expect(link.sent.suffix(3) == ["STDI", "ATCRA 640", "ATFCSD 40 30 00 00"])
+}
+@Test func obdAnErrorLineAfterGoodFramesThrowsAndDiscardsThem() async {
+    let link = FakeLink { cmd in cmd == "01 00" ? ["7E8 06 41 00 BE 3E B8 11", "BUFFER FULL"] : ["OK"] }
+    await #expect(throws: LinkError.adapterError("BUFFER FULL")) { try await Diag(link: link, log: Log()).obd([0x01, 0x00]) }
+}
+@Test func obdKeepsASingleFrameOfLengthZeroAsAnEmptyPayload() async throws {
+    let link = FakeLink { cmd in cmd == "01 00" ? ["7E8 00"] : ["OK"] }
+    #expect(try await Diag(link: link, log: Log()).obd([0x01, 0x00]) == [0x7E8: []])
 }

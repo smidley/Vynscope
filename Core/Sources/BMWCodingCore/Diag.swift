@@ -22,12 +22,16 @@ public final class Diag {
     public var readTimeout: Duration = .milliseconds(1500)
     /// The addressing the adapter is set up for: `.bmw` after `setUp()`, `.obd` once `obd(_:)` has switched
     /// it, `.bmw` again once `select(module:)` has switched back. It changes only after every command of a
-    /// switch answered `OK`.
+    /// switch answered `OK`; after one that failed part-way, whichever of `obd(_:)` and `select(module:)` comes
+    /// next does its whole switch.
     public private(set) var addressing: Addressing = .bmw
     private let link: CommandLink
     private let log: Log
     /// The module the adapter's receive filter and flow-control address are set for, when known.
     private var selected: UInt8?
+    /// False from the first command of a switch between the addressings until its last one answered `OK`: the
+    /// adapter may then be set up for neither, so the next `obd(_:)` or `select(module:)` does its switch again.
+    private var settled = true
 
     public init(link: CommandLink, log: Log) {
         self.link = link
@@ -40,6 +44,7 @@ public final class Diag {
         selected = nil  // the reset wipes the adapter's filter
         _ = try await send("ATZ", timeout: .seconds(3))
         addressing = .bmw  // the reset dropped any OBD setup; the sequence below is BMW's
+        settled = true  // and whatever a switch that failed part-way had left
         for command in ELM.initSequence { try await expectOK(command) }
         let elmVersion = try await identity("ATI")
         let firmware = try await identity("STI")
@@ -48,13 +53,16 @@ public final class Diag {
     }
 
     /// Points the adapter at `module`: it passes on only that module's frames and sends its flow control
-    /// to it. Does nothing when `module` is already the selected one. After `obd(_:)` it first sets BMW
-    /// addressing up again (every command must answer `OK`), which leaves no module selected.
+    /// to it. Does nothing when `module` is already the selected one. After `obd(_:)`, or a switch that failed
+    /// part-way, it first sets BMW addressing up again (every command must answer `OK`), which forgets the
+    /// module selected before, so it is set again.
     public func select(module: UInt8) async throws {
-        if addressing == .obd {
+        if addressing == .obd || !settled {
+            settled = false
             for command in ELM.bmwSequence { try await expectOK(command) }
             addressing = .bmw
             selected = nil  // `ATAR` dropped the filter, so even the module selected before must be set again
+            settled = true
         }
         guard module != selected else { return }
         selected = nil  // the adapter's state is unknown until both commands are acknowledged
@@ -109,13 +117,18 @@ public final class Diag {
 
     /// Sends one standard OBD-II request to every controller at once and returns each one's complete answer by
     /// the CAN id it came on (`0x7E8...0x7EF`). The adapter must be set up; it is switched to OBD addressing
-    /// first when it is not there (every command must answer `OK`). An id whose message did not finish, or that
-    /// answered negatively, is left out and noted; `NO DATA` gives an empty dictionary. Throws
-    /// `LinkError.adapterError` as soon as the adapter prints an error line.
+    /// first when it is not there (every command must answer `OK`), which undoes a previous `select`: a module
+    /// read after this must be selected again. An id whose message did not finish, or that answered negatively,
+    /// is left out and noted; `NO DATA` gives an empty dictionary. Throws `LinkError.adapterError` as soon as
+    /// the adapter prints an error line. The payload is sent as given: the caller enforces the read-only
+    /// allow-list.
     public func obd(_ payload: [UInt8]) async throws -> [UInt16: [UInt8]] {
-        if addressing != .obd {
+        if addressing != .obd || !settled {
+            settled = false
+            selected = nil  // `ATAR` drops the receive filter, so a module read after this must be selected again
             for command in ELM.obdSequence { try await expectOK(command) }
             addressing = .obd
+            settled = true
         }
         // ponytail: no wait and re-ask on 0x78 (response pending) as in `request(_:_:)`; a controller still
         // pending is left out like any negative answer. Add the re-ask if one turns up.
