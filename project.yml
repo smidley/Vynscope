@@ -41,6 +41,12 @@ targets:
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        UIAppFonts:                         # App/Fonts, copied flat into the bundle's resources
+          - "Manrope[wght].ttf"
+          - IBMPlexMono-Regular.ttf
+          - IBMPlexMono-Medium.ttf
+          - IBMPlexMono-SemiBold.ttf
+        ATSApplicationFontsPath: "."        # the Mac's equivalent: every font in Contents/Resources
     entitlements:
       path: App/Vynscope.entitlements
       properties:
@@ -52,7 +58,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.smidley.vynscope
-        ASSETCATALOG_COMPILER_APPICON_NAME: ""   # no app icon yet; the asset catalog holds the ChatGPT logo
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
 schemes:
   Vynscope:
     build:
