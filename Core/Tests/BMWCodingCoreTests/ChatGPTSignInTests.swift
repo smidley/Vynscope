@@ -45,6 +45,11 @@ let attempt = SignInAttempt(verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEj
     // With no account held (after a sign-out) another client id is a new registration.
     #expect(try ChatGPTSignIn.parseCallback(good, expectedState: "st4te", expectedClientID: "oaiapp_other", accountHeld: false).clientID == "oaiapp_abc")
     #expect(try ChatGPTSignIn.parseCallback(URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=st4te")!, expectedState: "st4te", expectedClientID: "oaiapp_abc").clientID == nil)
+    // The registration's own client id is never the issued one, whatever is held.
+    let registration = URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=st4te&client_id=dynamic_agent_client")!
+    #expect(throws: SignInError.registrationIncomplete) { try ChatGPTSignIn.parseCallback(registration, expectedState: "st4te", expectedClientID: nil) }
+    #expect(throws: SignInError.registrationIncomplete) { try ChatGPTSignIn.parseCallback(registration, expectedState: "st4te", expectedClientID: "oaiapp_abc", accountHeld: false) }
+    #expect(throws: SignInError.registrationIncomplete) { try ChatGPTSignIn.parseCallback(registration, expectedState: "st4te", expectedClientID: "oaiapp_abc") }
 }
 
 @Test func everyCallbackErrorIsReported() {

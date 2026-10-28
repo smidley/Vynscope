@@ -61,7 +61,7 @@ public enum SignInError: Error, Equatable {
     case callbackError(code: String, description: String?)
     case stateMismatch
     case missingCode
-    /// A first sign-in's callback carried no issued client id.
+    /// A first sign-in's callback carried no issued client id, or a callback carried the registration's own.
     case registrationIncomplete
     /// The callback named a client id other than the attempt's while an account is held.
     case clientMismatch
@@ -152,6 +152,7 @@ public enum ChatGPTSignIn {
         }
         guard let code = value("code") else { throw SignInError.missingCode }
         let clientID = value("client_id")
+        if clientID == ChatGPT.registrationClientID { throw SignInError.registrationIncomplete }
         if expectedClientID == nil, clientID == nil { throw SignInError.registrationIncomplete }
         if accountHeld, let expectedClientID, let clientID, clientID != expectedClientID {
             throw SignInError.clientMismatch
