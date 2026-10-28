@@ -2,12 +2,20 @@ import SwiftUI
 
 @main
 struct VynscopeApp: App {
-    @State private var flow = Flow()
+    @State private var flow: Flow
+    @State private var ai: AIFlow
+
+    init() {
+        let flow = Flow()
+        self.flow = flow
+        ai = AIFlow(flow: flow)
+    }
 
     var body: some Scene {
         WindowGroup {
             FlowView()
                 .environment(flow)
+                .environment(ai)
         }
         #if os(macOS)
         .defaultSize(width: 420, height: 760)
@@ -43,6 +51,7 @@ struct FlowView: View {
                 case .car: CarStep()
                 case .modules: ModulesStep()
                 case .backup: BackupStep()
+                case .ai: AIStep()
                 }
             }
             .frame(maxHeight: .infinity, alignment: .top)
@@ -57,7 +66,7 @@ struct FlowView: View {
                 }
                 ToolbarItem { LogButton() }
                 ToolbarItem(placement: .primaryAction) {
-                    Button(flow.step == .backup ? "Done" : "Next") { flow.next() }
+                    Button(flow.step == .ai ? "Done" : "Next") { flow.next() }
                         .disabled(!flow.canGoNext)
                 }
             }
@@ -70,14 +79,14 @@ struct FlowView: View {
     }
 }
 
-/// The four steps by title, the current one bold.
+/// The steps by number and title, the current one bold.
 struct StepIndicator: View {
     let current: Step
 
     var body: some View {
         HStack {
             ForEach(Step.allCases, id: \.self) { step in
-                Text("\(step.rawValue + 1) \(step.title)")
+                Text(step.indicatorLabel)
                     .fontWeight(step == current ? .bold : .regular)
                     .foregroundStyle(step == current ? .primary : .secondary)
                     .frame(maxWidth: .infinity)

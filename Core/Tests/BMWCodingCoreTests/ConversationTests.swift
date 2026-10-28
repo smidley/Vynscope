@@ -18,6 +18,21 @@ import Testing
     #expect(store.load(vin: "WBY73AW04RFFAKE19") == nil)
     try store.deleteAll()
 }
+@Test func deleteRemovesOnlyThatCarsConversation() throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let store = ConversationStore(directory: folder)
+    try store.delete(vin: "WBY73AW04RFFAKE19")  // no folder yet: not an error
+    let started = Date(timeIntervalSince1970: 1_793_000_000)
+    let mine = Conversation(vin: "WBY73AW04RFFAKE19", started: started, model: "claude-opus-5-5", carContext: "{}")
+    let other = Conversation(vin: "WBA00000000FAKE01", started: started, model: "claude-opus-5-5", carContext: "{}")
+    try store.save(mine)
+    try store.save(other)
+    try store.delete(vin: "WBY73AW04RFFAKE19")
+    #expect(store.load(vin: "WBY73AW04RFFAKE19") == nil)
+    #expect(store.load(vin: "WBA00000000FAKE01") == other)
+    try store.delete(vin: "WBY73AW04RFFAKE19")  // already gone: not an error
+}
 @Test func chipsComeOffTheEnd() {
     let text = "Two faults.\n\nSuggested questions:\n- Is the camera related?\n- What would a dealer charge?\n"
     let (body, questions) = Chips.split(text)

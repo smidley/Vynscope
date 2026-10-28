@@ -81,6 +81,13 @@ public struct ConversationStore {
         try encoder.encode(conversation).write(to: file(vin: conversation.vin), options: .atomic)
     }
 
+    /// Removes the conversation of the car with this VIN: its file. Its being missing is not an error.
+    public func delete(vin: String) throws {
+        let url = file(vin: vin)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.removeItem(at: url)
+    }
+
     /// Removes every conversation: the `Conversations` folder. Its being missing is not an error.
     public func deleteAll() throws {
         guard FileManager.default.fileExists(atPath: folder.path) else { return }
