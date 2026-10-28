@@ -278,7 +278,8 @@ public final class ChatGPTSession {
     private let sleep: (Duration) async throws -> Void
     /// OpenAI's signing keys, fetched by the first sign-in to need them.
     private var jwks: JSON?
-    /// The refresh in flight, which every caller of `validAccessToken` waits on, so a rotated token is used once.
+    /// The refresh in flight, which every caller of `validAccessToken` and `renew` waits on, so a rotated token is used
+    /// once.
     private var refreshing: Task<ChatGPTAccount, any Error>?
     /// Set while `signOut` runs: a token asked for meanwhile is refused, so no refresh rotates what it revokes.
     private var signingOut = false
@@ -365,8 +366,20 @@ public final class ChatGPTSession {
         return account.accessToken
     }
 
-    /// Revokes the refresh token, up to three tries on a 5xx or no answer, then drops the account either way; the
-    /// registration stays.
+    /// A new access token for one the API refused before its expiry: the refresh `validAccessToken` runs for an
+    /// expiring token, run now, through the one in flight, with the same outcomes: `SignInError.signedOut` when it fails
+    /// terminally (the account is then dropped, the registration kept) or a sign-out is under way, `.network` with the
+    /// account kept when it fails in passing.
+    public func renew() async throws -> String {
+        try await freshAccount(renewing: true).accessToken
+    }
+
+    /// Forgets the client id issued to this device, the host id kept, so that the next sign-in registers the app again:
+    /// the way out when OpenAI no longer knows the registration and its sign-in page stops every attempt.
+    public func dropRegistration() { store.clientID = nil }
+
+    /// Revokes the refresh token, up to three tries on a 5xx or no answer, 1 s and then 2 s apart, then drops the
+    /// account either way; the registration stays.
     public func signOut() async -> SignOutResult {
         signingOut = true
         defer { signingOut = false }
@@ -379,7 +392,7 @@ public final class ChatGPTSession {
                 let reply = try? await transport.send(request)
                 if let reply, (200..<300).contains(reply.status) { result = .revoked; break }
                 if let reply, reply.status < 500 { break }  // refused: asking again does not change that
-                if tries < 3 { try? await sleep(.seconds(1)) }
+                if tries < 3 { try? await sleep(.seconds(tries)) }
             }
         }
         store.account = nil
@@ -390,12 +403,13 @@ public final class ChatGPTSession {
     /// Drops the account without revoking it (the API said the token is no longer valid); the registration stays.
     public func forget() { store.account = nil }
 
-    /// The account, refreshed first when its token expires within 60 s, through the one refresh in flight.
-    private func freshAccount() async throws -> ChatGPTAccount {
+    /// The account, refreshed first when its token expires within 60 s or `renewing` asks, through the one refresh in
+    /// flight.
+    private func freshAccount(renewing: Bool = false) async throws -> ChatGPTAccount {
         guard !signingOut else { throw SignInError.signedOut }
         if let refreshing { return try await refreshing.value }
         guard let account = store.account else { throw SignInError.signedOut }
-        guard account.expiresAt <= now().addingTimeInterval(60) else { return account }
+        guard renewing || account.expiresAt <= now().addingTimeInterval(60) else { return account }
         let refresh = Task { try await self.refresh(account) }
         refreshing = refresh
         defer { refreshing = nil }

@@ -30,12 +30,18 @@ public protocol HTTPTransport: AnyObject {
     func send(_ request: URLRequest) async throws -> HTTPReply
 }
 
-/// `HTTPTransport` over `URLSession.shared`; a `URLError` is thrown as it is.
+/// `HTTPTransport` over an ephemeral `URLSession`; a `URLError` is thrown as it is.
 public final class URLSessionHTTPTransport: HTTPTransport {
+    /// The session of both transports, this one and `URLSessionTransport`. Ephemeral: no cache, cookie or credential
+    /// goes to disk, so neither a request, with the access token or the API key among its headers, nor its answer is
+    /// ever written to a file (`URLSession.shared` keeps a model-list `GET` with its `Authorization` header in its disk
+    /// cache). One for the app's run, so that connections are reused.
+    static let session = URLSession(configuration: .ephemeral)
+
     public init() {}
 
     public func send(_ request: URLRequest) async throws -> HTTPReply {
-        let (body, response) = try await URLSession.shared.data(for: request)
+        let (body, response) = try await Self.session.data(for: request)
         let http = response as? HTTPURLResponse
         var headers: [String: String] = [:]
         for (name, value) in http?.allHeaderFields ?? [:] { headers["\(name)".lowercased()] = "\(value)" }

@@ -12,7 +12,8 @@ import Testing
     let hit = URL(string: redirect.absoluteString + "?code=c0de&state=s")!
     let (data, response) = try await URLSession.shared.data(from: hit)
     #expect((response as? HTTPURLResponse)?.statusCode == 200)
-    #expect(String(decoding: data, as: UTF8.self).contains("You can close this page"))
+    // Nothing is checked yet when the page goes out: it says what fits every outcome.
+    #expect(String(decoding: data, as: UTF8.self).contains("<p>You can close this page and return to Vynscope.</p>"))
     let url = try await caught
     #expect(url.query == "code=c0de&state=s")
     let waiting = Task { try await listener.callback() }

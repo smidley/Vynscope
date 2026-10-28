@@ -15,7 +15,8 @@ public struct TransportResponse {
     public var lines: AsyncThrowingStream<String, any Error>
 }
 
-/// `POST` to `url` with `URLSession`; `url` is the Messages endpoint unless told another.
+/// `POST` to `url` on the ephemeral session of `URLSessionHTTPTransport`, which writes nothing to disk; `url` is the
+/// Messages endpoint unless told another.
 public final class URLSessionTransport: Transport {
     private let url: URL
 
@@ -27,7 +28,11 @@ public final class URLSessionTransport: Transport {
         request.httpBody = body
         request.allHTTPHeaderFields = headers
         let bytes: URLSession.AsyncBytes, response: URLResponse
-        do { (bytes, response) = try await URLSession.shared.bytes(for: request) } catch { throw Self.mapped(error) }
+        do {
+            (bytes, response) = try await URLSessionHTTPTransport.session.bytes(for: request)
+        } catch {
+            throw Self.mapped(error)
+        }
         let http = response as? HTTPURLResponse
         var fields: [String: String] = [:]
         for (name, value) in http?.allHeaderFields ?? [:] { fields["\(name)".lowercased()] = "\(value)" }

@@ -204,8 +204,11 @@ func heldAccount(subject: String = "sub", scopes: [String] = [ChatGPT.planScope]
     #expect(await session(store, transport).signOut() == .revoked)
     #expect(transport.requests.count == 2 && store.account == nil && store.clientID == "oaiapp_abc" && store.hostID == "urn:uuid:1")
     store.account = ChatGPTAccount(email: "e", issuer: ChatGPT.issuer, subject: "s", clientID: "oaiapp_abc", hostID: "urn:uuid:1", idToken: nil, accessToken: "at", refreshToken: "rt", tokenType: "Bearer", expiresIn: 3600, scopes: [], savedAt: .now)
-    #expect(await session(store, FakeHTTPTransport([reply(503, ""), reply(503, ""), reply(503, "")])).signOut() == .unconfirmed)
-    #expect(store.account == nil)
+    var waits: [Duration] = []
+    let unconfirmed = ChatGPTSession(store: store, transport: FakeHTTPTransport([reply(503, ""), reply(503, ""), reply(503, "")]), log: Log(), sleep: { waits.append($0) })
+    #expect(await unconfirmed.signOut() == .unconfirmed)
+    // The retries back off: 1 s, then 2 s.
+    #expect(store.account == nil && waits == [.seconds(1), .seconds(2)])
 }
 
 @Test func aTokenAskedForDuringASignOutIsRefused() async throws {
@@ -311,4 +314,70 @@ func heldAccount(subject: String = "sub", scopes: [String] = [ChatGPT.planScope]
     let session = session(store, FakeHTTPTransport([]), now: Date(timeIntervalSince1970: 1_800_000_100))
     #expect(try await session.validAccessToken(forPlanUse: false) == "at1")
     await #expect(throws: SignInError.planNotGranted) { try await session.validAccessToken() }
+}
+
+@Test func aRenewalRefreshesATokenThatIsNotExpiring() async throws {
+    let store = MemoryAccountStore()
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"; store.account = heldAccount()
+    let transport = FakeHTTPTransport([reply(200, renewedJSON)])
+    // 100 s into a token that lasts an hour: refused by the API all the same, so renewed.
+    let renewing = session(store, transport, now: Date(timeIntervalSince1970: 1_800_000_100))
+    #expect(try await renewing.renew() == "at2")
+    let refresh = try #require(transport.requests.first)
+    #expect(transport.requests.count == 1 && refresh.url == ChatGPT.tokenEndpoint)
+    #expect(String(decoding: try #require(refresh.httpBody), as: UTF8.self).contains("refresh_token=rt1"))
+    #expect(store.account?.accessToken == "at2" && store.account?.refreshToken == "rt2")
+    #expect(store.account?.savedAt == Date(timeIntervalSince1970: 1_800_000_100) && store.account?.mayUsePlan == true)
+}
+
+@Test func aRenewalThatFailsTerminallySignsOutAndOneThatFailsInPassingKeepsTheAccount() async throws {
+    let store = MemoryAccountStore()
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"; store.account = heldAccount()
+    let now = Date(timeIntervalSince1970: 1_800_000_100)
+    let flaky = session(store, FakeHTTPTransport([reply(503, "")]), now: now)
+    await #expect(throws: SignInError.network("refresh failed with status 503")) { try await flaky.renew() }
+    #expect(store.account == heldAccount())
+    let failing = session(store, FakeHTTPTransport([reply(400, #"{"error":"refresh_token_reused"}"#)]), now: now)
+    await #expect(throws: SignInError.signedOut) { try await failing.renew() }
+    #expect(store.account == nil && store.clientID == "oaiapp_abc" && store.hostID == "urn:uuid:1")
+}
+
+@Test func droppingTheRegistrationMakesTheNextSignInRegisterAgain() throws {
+    let store = MemoryAccountStore()
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"
+    let session = session(store, FakeHTTPTransport([]))
+    session.dropRegistration()
+    #expect(store.clientID == nil && store.hostID == "urn:uuid:1")
+    let url = session.begin(redirect: redirect).url
+    let query = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems).reduce(into: [String: String]()) { $0[$1.name] = $1.value }
+    #expect(query["client_id"] == "dynamic_agent_client" && query["agent_name_hint"] == "Vynscope")
+    #expect(query["ext_agent_host_id"] == "urn:uuid:1")
+}
+
+@Test func anIDTokenWithoutRS256AKeyIDOrThreePartsIsRefused() {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    let parts = signedIDToken.jwt.split(separator: ".").map(String.init)
+    /// `json` as a JWT part: base64url without padding.
+    func part(_ json: String) -> String {
+        Data(json.utf8).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+    let validate = { (token: String) in
+        try ChatGPTSignIn.validate(idToken: token, jwks: signedIDToken.jwks, clientID: "oaiapp_abc", nonce: "n0nce", now: now)
+    }
+    #expect(throws: SignInError.invalidIDToken("alg")) { try validate([part(#"{"alg":"none","typ":"JWT"}"#), parts[1], ""].joined(separator: ".")) }
+    #expect(throws: SignInError.invalidIDToken("key")) { try validate([part(#"{"alg":"RS256","typ":"JWT"}"#), parts[1], parts[2]].joined(separator: ".")) }
+    #expect(throws: SignInError.invalidIDToken("format")) { try validate([parts[0], parts[1]].joined(separator: ".")) }
+}
+
+@Test func aReturningSignInAsTheHeldAccountReplacesItsTokens() async throws {
+    let store = MemoryAccountStore()
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"; store.account = heldAccount(subject: "user_1")
+    let newTokens = tokenJSON.replacingOccurrences(of: #""access_token":"at1","refresh_token":"rt1""#, with: #""access_token":"at3","refresh_token":"rt3""#)
+    let transport = FakeHTTPTransport([reply(200, newTokens), reply(200, jwksJSON)])
+    let session = session(store, transport)
+    let (_, attempt) = session.begin(redirect: redirect)
+    let fixed = SignInAttempt(verifier: attempt.verifier, state: attempt.state, nonce: "n0nce")
+    let account = try await session.complete(callback: URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=\(attempt.state)")!, attempt: fixed, redirect: redirect)
+    #expect(account.subject == "user_1" && account.accessToken == "at3" && account.refreshToken == "rt3" && account.idToken == signedIDToken.jwt)
+    #expect(store.account == account && store.clientID == "oaiapp_abc")
 }

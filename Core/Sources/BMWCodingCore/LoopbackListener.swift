@@ -52,7 +52,7 @@ public final class LoopbackListener {
     }
 
     /// The first request to the callback path, as a URL with its query; answers it with a page saying the owner can
-    /// close it. Throws `CancellationError` when cancelled.
+    /// close it, which claims nothing, since nothing is checked yet. Throws `CancellationError` when cancelled.
     public func callback() async throws -> URL {
         var iterator = targets.makeAsyncIterator()
         // nil when the awaiting task is cancelled or `stop` ended the wait.
@@ -98,7 +98,7 @@ public final class LoopbackListener {
         let isCallback = target.hasPrefix("/") && URL(string: "http://127.0.0.1\(target)")?.path == ChatGPT.callbackPath
         let page = isCallback
             ? response(
-                "200 OK", "<html><body><p>Signed in. You can close this page and return to Vynscope.</p></body></html>")
+                "200 OK", "<html><body><p>You can close this page and return to Vynscope.</p></body></html>")
             : response("404 Not Found", "")
         connection.send(content: page, contentContext: .finalMessage, completion: .contentProcessed { _ in
             connection.cancel()
