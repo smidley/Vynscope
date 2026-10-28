@@ -233,14 +233,15 @@ final class AIFlow {
     }
 
     /// Shows the conversation of the provider just picked for the connected car or, when there is none and the
-    /// provider's credentials are in, runs the health check. Nothing while a check or a turn runs.
+    /// provider's credentials are in, runs the health check; on another step than the AI step, entering it runs the
+    /// check instead. Nothing while a check or a turn runs.
     func switchProvider() async {
         guard !flow.busy else { return }
         conversation = flow.vin.flatMap { store.load(vin: $0, provider: settings.provider) }
         phase = conversation == nil ? .idle : .ready
         planLimited = false
         error = nil
-        if conversation == nil, hasCredentials, flow.diag != nil { await healthCheck() }
+        if conversation == nil, hasCredentials, flow.diag != nil, flow.step == .ai { await healthCheck() }
     }
 
     /// Signs in with ChatGPT: starts the listener for the redirect, then opens OpenAI's sign-in page, in the default
