@@ -276,7 +276,7 @@ public final class ChatGPTSession {
     private let log: Log
     private let now: () -> Date
     private let sleep: (Duration) async throws -> Void
-    /// OpenAI's signing keys, fetched by the first sign-in to need them.
+    /// OpenAI's signing keys, fetched by the first sign-in to need them, and again by one whose token they lack.
     private var jwks: JSON?
     /// The refresh in flight, which every caller of `validAccessToken` and `renew` waits on, so a rotated token is used
     /// once.
@@ -336,9 +336,18 @@ public final class ChatGPTSession {
             if case SignInError.tokenEndpoint(_, "invalid_client", _) = error { store.clientID = nil }
             throw error
         }
-        let jwks = try await keys()
-        let token = try ChatGPTSignIn.validate(
-            idToken: tokens.idToken ?? "", jwks: jwks, clientID: clientID, nonce: attempt.nonce, now: now())
+        let check = { (jwks: JSON) in
+            try ChatGPTSignIn.validate(
+                idToken: tokens.idToken ?? "", jwks: jwks, clientID: clientID, nonce: attempt.nonce, now: self.now())
+        }
+        let token: IDToken
+        do {
+            token = try await check(keys())
+        } catch SignInError.invalidIDToken("key") {
+            // The kept keys lack the token's kid, as after OpenAI rotates its keys: they are fetched again, once.
+            jwks = nil
+            token = try await check(keys())
+        }
         if let held, held.issuer != token.issuer || held.subject != token.subject {
             throw SignInError.differentAccount
         }
