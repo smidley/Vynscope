@@ -13,7 +13,8 @@ enum ChatGPTBrowser {
     static let usagePage = URL(string: "https://chatgpt.com/settings/usage")!
 
     #if os(macOS)
-    static func open(_ url: URL) {
+    /// Opens `url` in the default browser; false when it could not.
+    static func open(_ url: URL) -> Bool {
         NSWorkspace.shared.open(url)
     }
 

@@ -285,7 +285,10 @@ final class AIFlow {
         let wait = Task { try await listener.callback() }
         signInTask = wait
         #if os(macOS)
-        ChatGPTBrowser.open(url)
+        if !ChatGPTBrowser.open(url) {
+            error = "Could not open the browser."
+            cancelSignIn()
+        }
         #else
         signInURL = url
         #endif
@@ -306,7 +309,7 @@ final class AIFlow {
                 UserDefaults.standard.set(true, forKey: Self.welcomeShownKey)
             }
         } catch is CancellationError {
-            // Cancel, or the sheet dismissed: nothing to say.
+            // Cancel, or the sheet dismissed: nothing to say. A browser that did not open has said so already.
         } catch let failure as SignInError {
             switch failure {
             case .denied: error = "Sign-in was cancelled in the browser"
