@@ -122,7 +122,7 @@ public struct Turn: Equatable, Sendable {
 
 /// Talks to the Messages API: one streamed request at a time, with retries, and the mechanic's tool loop over
 /// them. Every request and its usage goes to the log; the key never does.
-public final class ClaudeClient {
+public final class ClaudeClient: ModelClient {
     /// Tool rounds and pauses per owner message.
     public static let roundCap = 12
     /// What each tool call past the round cap gets as its result instead of running.

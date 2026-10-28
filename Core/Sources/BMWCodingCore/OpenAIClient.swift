@@ -19,11 +19,13 @@ public struct OpenAIRequest: Equatable, Sendable {
 
 /// Talks to the Responses API on the owner's ChatGPT plan: one streamed request at a time, with retries, and the
 /// mechanic's tool loop over them. Every request and its usage goes to the log; the access token never does.
-public final class OpenAIClient {
+public final class OpenAIClient: ModelClient {
     /// Tool rounds per owner message.
     public static let roundCap = ClaudeClient.roundCap
     /// What each tool call past the round cap gets as its result instead of running.
     public static let roundCapResult = ClaudeClient.roundCapResult
+    /// What the output of a function call that failed starts with, before the failure's text.
+    static let errorPrefix = "Error: "
     /// What the instructions end with for a model that takes no web search.
     public static let noWebSentence =
         "Web search is not available in this conversation: when a question needs a lookup, say so instead of guessing."
@@ -239,7 +241,7 @@ public final class OpenAIClient {
         .object([
             "type": .string("function_call_output"), "call_id": call["call_id"] ?? .null, "namespace": .string("car"),
             "name": call["name"] ?? .null,
-            "output": .string(result.isError ? "Error: " + result.content : result.content),
+            "output": .string(result.isError ? Self.errorPrefix + result.content : result.content),
         ])
     }
 

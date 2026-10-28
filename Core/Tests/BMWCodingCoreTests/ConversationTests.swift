@@ -213,3 +213,161 @@ private func temporaryFolder() -> URL {
     #expect(loaded == gpt)
     #expect(loaded.turns.first?.provider == .openai && loaded.turns.first?.webSearchDropped == true)
 }
+
+// The conversation's messages as the chat shows them.
+
+@Test func anthropicMessagesBecomeTranscriptItems() {
+    let messages: [JSON] = [
+        Mechanic.ownerMessage("Summarize", provider: .anthropic),
+        .object(["role": .string("assistant"), "content": .array([
+            .object(["type": .string("server_tool_use"), "id": .string("s1"), "name": .string("web_search"), "input": .object(["query": .string("B1F3E")])]),
+            .object(["type": .string("tool_use"), "id": .string("t1"), "name": .string("read_faults"), "input": .object(["module": .string("40")])]),
+        ])]),
+        .object(["role": .string("user"), "content": .array([.object(["type": .string("tool_result"), "tool_use_id": .string("t1"), "content": .string("none"), "is_error": .bool(false)])])]),
+        .object(["role": .string("assistant"), "content": .array([
+            .object(["type": .string("text"), "text": .string("Based on ")]),
+            .object(["type": .string("text"), "text": .string("the results"), "citations": .array([.object(["type": .string("web_search_result_location"), "url": .string("https://a.example/p"), "title": .string("Page")])])]),
+        ])]),
+    ]
+    let items = Transcript.items(in: messages, provider: .anthropic)
+    #expect(items.map(\.kind) == [
+        .owner("Summarize"), .webSearch(query: "B1F3E"),
+        .toolCall(ToolCall(id: "t1", name: "read_faults", input: .object(["module": .string("40")])), result: ToolResult("none")),
+        .mechanic("Based on the results"), .sources([Sources.Source(url: "https://a.example/p", title: "Page")]),
+    ])
+    #expect(items.map(\.messageIndex) == [0, 1, 1, 3, 3] && items[3].place == 1)
+}
+
+@Test func openAIItemsBecomeTranscriptItems() throws {
+    let call = try JSON.parse(Data(functionCallItem(0, callId: "call_1", name: "read_faults", arguments: #"{"module":"40"}"#).json.utf8))
+    let answer = try JSON.parse(Data(textItem(0, "Nothing stored.", citations: [("https://a.example/p", "Page"), ("https://a.example/p", "Page again")]).json.utf8))
+    let messages: [JSON] = [
+        Mechanic.ownerMessage("Summarize", provider: .openai),
+        try JSON.parse(Data(reasoningItem(0).json.utf8)),
+        try JSON.parse(Data(webSearchItem(0, query: "B1F3E").json.utf8)),
+        .object(["id": .string("ws_2"), "type": .string("web_search_call"), "status": .string("completed"), "action": .object(["type": .string("open_page"), "url": .string("https://a.example/p")])]),
+        call,
+        .object(["type": .string("function_call_output"), "call_id": .string("call_1"), "namespace": .string("car"), "name": .string("read_faults"), "output": .string("Error: module 40 did not answer")]),
+        answer,
+    ]
+    let items = Transcript.items(in: messages, provider: .openai)
+    #expect(items.map(\.kind) == [
+        .owner("Summarize"), .webSearch(query: "B1F3E"), .webFetch(url: "https://a.example/p"),
+        .toolCall(ToolCall(id: "call_1", name: "read_faults", input: .object(["module": .string("40")])), result: ToolResult("module 40 did not answer", isError: true)),
+        .mechanic("Nothing stored."), .sources([Sources.Source(url: "https://a.example/p", title: "Page")]),
+    ])
+    #expect(items.map(\.messageIndex) == [0, 2, 3, 4, 6, 6])
+}
+
+// What the brief's tests above do not isolate.
+
+@Test func anAnthropicCallIsAnsweredByItsOwnIdAndTheBlocksThatShowNothingGiveNone() {
+    let messages: [JSON] = [
+        .object(["role": .string("assistant"), "content": .array([
+            .object(["type": .string("thinking"), "thinking": .string("hm"), "signature": .string("sig")]),
+            .object(["type": .string("server_tool_use"), "id": .string("s1"), "name": .string("web_fetch"), "input": .object(["url": .string("https://a.example/p")])]),
+            .object(["type": .string("web_fetch_tool_result"), "tool_use_id": .string("s1"), "content": .object(["type": .string("web_fetch_result"), "url": .string("https://a.example/p")])]),
+            .object(["type": .string("server_tool_use"), "id": .string("s2"), "name": .string("code_execution"), "input": .object([:])]),
+            .object(["type": .string("fallback")]),
+            .object(["type": .string("tool_use"), "id": .string("t1"), "name": .string("get_vehicle"), "input": .object([:])]),
+            .object(["type": .string("tool_use"), "id": .string("t2"), "name": .string("read_obd"), "input": .object(["pid": .string("42")])]),
+        ])]),
+        .object(["role": .string("user"), "content": .array([.object(["type": .string("tool_result"), "tool_use_id": .string("t2"), "content": .string("boom"), "is_error": .bool(true)])])]),
+    ]
+    let items = Transcript.items(in: messages, provider: .anthropic)
+    #expect(items.map(\.kind) == [
+        .webFetch(url: "https://a.example/p"), .fallback,
+        .toolCall(ToolCall(id: "t1", name: "get_vehicle", input: .object([:])), result: nil),
+        .toolCall(ToolCall(id: "t2", name: "read_obd", input: .object(["pid": .string("42")])), result: ToolResult("boom", isError: true)),
+    ])
+    #expect(items.map(\.place) == [1, 4, 5, 6])
+}
+
+@Test func theSourcesFollowTheLastTextAndEmptyTextShowsNothing() {
+    func text(_ value: String, citing url: String? = nil) -> JSON {
+        var block: [String: JSON] = ["type": .string("text"), "text": .string(value)]
+        if let url { block["citations"] = .array([.object(["type": .string("web_search_result_location"), "url": .string(url), "title": .string("Page")])]) }
+        return .object(block)
+    }
+    let call = ToolCall(id: "t", name: "get_vehicle", input: .object([:]))
+    let messages: [JSON] = [
+        .object(["role": .string("assistant"), "content": .array([
+            text("Looking.", citing: "https://a.example/p"),
+            .object(["type": .string("tool_use"), "id": .string("t"), "name": .string("get_vehicle"), "input": .object([:])]),
+            text("Done."), text(""),
+        ])]),
+        .object(["role": .string("assistant"), "content": .array([text("No sources here.")])]),
+        .object(["role": .string("assistant"), "content": .array([text("")])]),
+    ]
+    let items = Transcript.items(in: messages, provider: .anthropic)
+    // The cited text is not the last, so its page is listed after the message's last text, which ends at block 3.
+    #expect(items.map(\.kind) == [
+        .mechanic("Looking."), .toolCall(call, result: nil), .mechanic("Done."),
+        .sources([Sources.Source(url: "https://a.example/p", title: "Page")]), .mechanic("No sources here."),
+    ])
+    #expect(items.map(\.messageIndex) == [0, 0, 0, 0, 1] && items.map(\.place) == [0, 1, 3, 3, 0])
+}
+
+@Test func openAITextIsJoinedAndARefusalStillShows() {
+    let owner = JSON.object(["role": .string("user"), "content": .string("hello")])
+    let refusal = JSON.object(["type": .string("message"), "role": .string("assistant"), "content": .array([.object(["type": .string("refusal"), "refusal": .string("I can't help with that.")])])])
+    let parts = JSON.object(["type": .string("message"), "role": .string("assistant"), "content": .array([
+        .object(["type": .string("output_text"), "text": .string("Part one. "), "annotations": .array([.object(["type": .string("file_citation"), "file_id": .string("f"), "url": .string("https://not.a.url.citation")])])]),
+        .object(["type": .string("output_text"), "text": .string("Part two."), "annotations": .array([])]),
+    ])])
+    let items = Transcript.items(in: [owner, refusal, parts], provider: .openai)
+    // Only a `url_citation` lists a page, so there are no sources here.
+    #expect(items.map(\.kind) == [.owner("hello"), .mechanic("I can't help with that."), .mechanic("Part one. Part two.")])
+    #expect(items.map(\.messageIndex) == [0, 1, 2] && items.allSatisfy { $0.place == 0 })
+}
+
+@Test func openAICallsAreAnsweredByTheirOwnLaterOutput() throws {
+    func call(_ id: String, _ arguments: String) throws -> JSON {
+        try JSON.parse(Data(functionCallItem(0, callId: id, name: "read_obd", arguments: arguments).json.utf8))
+    }
+    func output(_ id: String, _ text: String) -> JSON {
+        .object(["type": .string("function_call_output"), "call_id": .string(id), "output": .string(text)])
+    }
+    let messages: [JSON] = [
+        output("c2", "too early"), try call("c1", "not json"), try call("c2", #"{"pid":"42"}"#), try call("c3", "{}"),
+        output("c3", "Error: no answer"), output("c2", #"{"ok":true}"#),
+        .object(["id": .string("ws_1"), "type": .string("web_search_call"), "status": .string("completed"), "action": .object(["type": .string("find_in_page"), "url": .string("https://a.example/p"), "pattern": .string("x")])]),
+    ]
+    let items = Transcript.items(in: messages, provider: .openai)
+    #expect(items.map(\.kind) == [
+        .toolCall(ToolCall(id: "c1", name: "read_obd", input: .object([:])), result: nil),
+        .toolCall(ToolCall(id: "c2", name: "read_obd", input: .object(["pid": .string("42")])), result: ToolResult(#"{"ok":true}"#)),
+        .toolCall(ToolCall(id: "c3", name: "read_obd", input: .object([:])), result: ToolResult("no answer", isError: true)),
+    ])
+    #expect(items.map(\.messageIndex) == [1, 2, 3])
+}
+
+// The seam end to end: what each client stores for a turn reads back as the same rows.
+
+@Test(arguments: Provider.allCases)
+func aTurnRunsOnEitherClientThroughTheSeamAndReadsBackAsItems(provider: Provider) async throws {
+    let client: any ModelClient
+    switch provider {
+    case .anthropic:
+        client = ClaudeClient(transport: FakeTransport([
+            (200, [:], toolUseStream(id: "t1", name: "read_faults", input: #"{"module":"40"}"#)),
+            (200, [:], textStream("Nothing stored.")),
+        ]), apiKey: "k", log: Log())
+    case .openai:
+        client = OpenAIClient(transport: FakeTransport([
+            (200, [:], responsesStream([functionCallItem(0, callId: "t1", name: "read_faults", arguments: #"{"module":"40"}"#)])),
+            (200, [:], responsesStream([textItem(0, "Nothing stored.")])),
+        ]), accessToken: "t", log: Log())
+    }
+    var messages = [Mechanic.ownerMessage("Look", provider: provider)]
+    let turn = try await client.run(
+        messages: &messages, system: Mechanic.systemPrompt(carContext: "{}", web: provider == .anthropic ? .searchAndFetch : .search),
+        tools: Mechanic.tools, model: "m", effort: "low",
+        runTool: { _ in ToolResult("module 40 did not answer", isError: true) }, onUpdate: { _ in }, onUsage: { _ in })
+    #expect(turn.rounds == 1)
+    #expect(Transcript.items(in: messages, provider: provider).map(\.kind) == [
+        .owner("Look"),
+        .toolCall(ToolCall(id: "t1", name: "read_faults", input: .object(["module": .string("40")])), result: ToolResult("module 40 did not answer", isError: true)),
+        .mechanic("Nothing stored."),
+    ])
+}
