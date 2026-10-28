@@ -91,8 +91,25 @@ final class AIFlow {
     /// Sends the owner's `text` and has the mechanic answer it.
     func send(_ text: String) {
         guard phase == .ready, conversation != nil else { return }
+        phase = .answering  // before anything awaits, so that a second send or a health check cannot slip in
         conversation?.messages.append(Self.textMessage("user", text))
         turnTask = Task { await runTurn(effort: settings.effort) }
+    }
+
+    /// Whether the conversation ends with an owner message that got no answer, because its turn failed or was
+    /// stopped before any text, so that `retry()` can run it again.
+    var canRetry: Bool {
+        guard phase == .ready, let last = conversation?.messages.last else { return false }
+        return Self.isOwnerMessage(last)
+    }
+
+    /// Runs the unanswered owner message the conversation ends with again, adding no message; the health check's
+    /// first question at high effort, as the check runs it.
+    func retry() {
+        guard canRetry, let conversation else { return }
+        phase = .answering  // as in `send`
+        let effort = conversation.messages.count == 1 ? "high" : settings.effort
+        turnTask = Task { await runTurn(effort: effort) }
     }
 
     /// Stops the health check or the turn in progress.
@@ -122,17 +139,20 @@ final class AIFlow {
             self.error = "Could not clear the conversations: \(error.localizedDescription)"
             return
         }
+        error = nil
         conversation = nil
         phase = .idle
     }
 
-    /// Saves `key`, without the blanks around it, as the API key.
+    /// Saves `key`, without the blanks around it, as the API key, and clears the error, such as the `No API key`
+    /// a turn left.
     func saveKey(_ key: String) {
         do {
             try Keychain.setAPIKey(key.trimmingCharacters(in: .whitespacesAndNewlines))
             hasKey = true
+            error = nil
         } catch {
-            self.error = "Could not save the key: \(error)"  // a KeychainError, which holds only its status
+            self.error = "Could not save the key: \(error)"  // a KeychainError: the system's text for its status
         }
     }
 
@@ -140,6 +160,7 @@ final class AIFlow {
         do {
             try Keychain.deleteAPIKey()
             hasKey = false
+            error = nil
         } catch {
             self.error = "Could not remove the key: \(error)"
         }
@@ -158,6 +179,12 @@ final class AIFlow {
             total += cost
         }
         return total
+    }
+
+    /// Whether `message` is one the owner wrote: a user message with text, not one that carries tool results.
+    static func isOwnerMessage(_ message: JSON) -> Bool {
+        message["role"]?.string == "user"
+            && (message["content"]?.array ?? []).contains { $0["type"]?.string == "text" }
     }
 
     /// The activity line for a web search or fetch the API ran (a `server_tool_use` block); nil for another tool.
@@ -194,23 +221,28 @@ final class AIFlow {
     }
 
     /// Has the mechanic answer the owner message the conversation ends with, streaming its text into `streaming` and
-    /// its reads into `activity`, then records the turn. A stop keeps the text streamed so far; an error keeps the
-    /// conversation as it was before the answer. Either way the conversation is saved and never holds a tool call
-    /// without its result.
+    /// its reads into `activity`, then records the turn with what its requests used and its activity. A stop keeps
+    /// the text streamed so far; an error keeps the conversation as it was before the answer and records the error.
+    /// Either way the conversation is saved, never holds a tool call without its result, and is ready for the next
+    /// message, also when the turn could not start.
     private func runTurn(effort: String) async {
         guard var conversation else { return }
-        guard case let (diag, car)? = connectedCar() else { error = "Not connected"; phase = .ready; return }
-        guard let key = Keychain.apiKey() else { error = "No API key: enter one in Settings"; phase = .ready; return }
+        defer { phase = .ready }
+        guard case let (diag, car)? = connectedCar() else { error = "Not connected"; return }
+        guard let key = Keychain.apiKey() else { error = "No API key: enter one in Settings"; return }
         await working("Answering with the AI mechanic") {
             error = nil
             phase = .answering
-            streaming = ""
-            activity = []
             let mechanic = Mechanic(diag: diag, car: car, log: flow.log)
             mechanic.beginMessage()
             let client = ClaudeClient(transport: URLSessionTransport(), apiKey: key, log: flow.log)
             let model = settings.model
             let ownerMessage = conversation.messages.count - 1
+            // What the turn's completed requests used, which a stopped or failed turn records too.
+            var usage = Usage.zero
+            // A tool call, a result or the end of a request came after the last text: the next text starts after a
+            // blank line, where the saved answer starts another bubble.
+            var textBroken = false
             // `run` holds its `inout` across awaits, so it works on a copy that goes back only once it returns.
             var messages = conversation.messages
             do {
@@ -224,37 +256,52 @@ final class AIFlow {
                     },
                     onUpdate: { update in
                         switch update {
-                        case .text(let text): streaming += text
-                        case .block(let block) where block["type"]?.string == "server_tool_use":
-                            if let line = Self.serverToolLine(block) { activity.append(line) }
-                        default: break  // `.finished` ends each request of the turn, not the turn
+                        case .text(let text):
+                            if textBroken, !streaming.isEmpty { streaming += "\n\n" }
+                            textBroken = false
+                            streaming += text
+                        case .block(let block):
+                            if block["type"]?.string == "server_tool_use", let line = Self.serverToolLine(block) {
+                                activity.append(line)
+                            }
+                            if block["type"]?.string != "text" { textBroken = true }
+                        case .finished:
+                            textBroken = true  // the end of one request of the turn, not of the turn
                         }
-                    })
+                    },
+                    onUsage: { usage = usage + $0 })
                 conversation.messages = messages
                 conversation.turns.append(TurnRecord(
                     messageIndex: ownerMessage, usage: turn.usage, rounds: turn.rounds, refused: turn.refused,
-                    truncated: turn.truncated, stoppedAtRoundCap: turn.stoppedAtRoundCap, stopped: false, model: model))
+                    truncated: turn.truncated, stoppedAtRoundCap: turn.stoppedAtRoundCap, stopped: false, model: model,
+                    activity: activity))
             } catch is CancellationError {
-                if !streaming.isEmpty { conversation.messages.append(Self.textMessage("assistant", streaming)) }
+                let text = streaming.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { conversation.messages.append(Self.textMessage("assistant", text)) }
                 conversation.turns.append(TurnRecord(
-                    messageIndex: ownerMessage, usage: .zero, rounds: 0, refused: false, truncated: false,
-                    stoppedAtRoundCap: false, stopped: true, model: model))
-            } catch ClaudeError.api(_, let type, let message) {
-                error = "API error (\(type)): \(message)"
-            } catch ClaudeError.badToolInput {
-                error = "The model sent an unreadable tool request; ask again"
-            } catch ClaudeError.network(let message) {
-                error = "No connection to Anthropic: \(message)"
+                    messageIndex: ownerMessage, usage: usage, rounds: 0, refused: false, truncated: false,
+                    stoppedAtRoundCap: false, stopped: true, model: model, activity: activity))
             } catch {
-                self.error = Flow.describe(error)
+                let text = switch error {
+                case ClaudeError.api(_, let type, let message): "API error (\(type)): \(message)"
+                case ClaudeError.badToolInput: "The model sent an unreadable tool request; ask again"
+                case ClaudeError.network(let message): "No connection to Anthropic: \(message)"
+                default: Flow.describe(error)
+                }
+                self.error = text
+                conversation.turns.append(TurnRecord(
+                    messageIndex: ownerMessage, usage: usage, rounds: 0, refused: false, truncated: false,
+                    stoppedAtRoundCap: false, stopped: false, model: model, error: text, activity: activity))
             }
             self.conversation = conversation
+            // The turn is in the conversation now; the next one starts from nothing, even before it runs.
+            streaming = ""
+            activity = []
             do {
                 try store.save(conversation)
             } catch {
                 self.error = "Could not save the conversation: \(error.localizedDescription)"
             }
-            phase = .ready
         }
     }
 

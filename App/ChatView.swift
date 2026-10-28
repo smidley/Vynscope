@@ -2,7 +2,7 @@ import BMWCodingCore
 import SwiftUI
 
 /// The conversation with the mechanic: the running total, every message with the reads, sources and usage of each
-/// turn, the turn in progress, and the input bar.
+/// turn, the turn in progress, Try again when the last question got no answer, and the input bar.
 struct ChatView: View {
     @Environment(AIFlow.self) private var ai
     private static let end = "end"
@@ -30,6 +30,11 @@ struct ChatView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal)
             }
+            if ai.canRetry {
+                Button("Try again") { ai.retry() }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+            }
             ChatInput()
         }
     }
@@ -48,7 +53,7 @@ struct ChatTotal: View {
     }
 }
 
-/// Every message of the conversation as the chat shows it, with the usage line after each turn.
+/// Every message of the conversation as the chat shows it, with the usage line of each turn.
 struct ChatHistory: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -65,6 +70,10 @@ struct ChatHistory: View {
                 case .mechanic(let text): Bubble(text: text, owner: false)
                 case .chips(let questions): SuggestedQuestions(questions: questions)
                 case .activity(let line, let link): ActivityLine(line: line, link: link)
+                case .failed(let error):
+                    Text("Failed: " + error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 case .sources(let sources): SourceList(sources: sources)
                 case .usage(let turn, let cost): UsageLine(turn: turn, cost: cost)
                 }
@@ -73,34 +82,42 @@ struct ChatHistory: View {
     }
 
     /// The rows for `conversation`: the owner's messages but the first, the fixed question of the health check; the
-    /// mechanic's text, its reads and lookups and the pages it cites; the chips under its last answer; and after each
-    /// turn's last message the usage line.
+    /// mechanic's text, a bubble for each run of text blocks, its reads and lookups and the pages it cites; the chips
+    /// under its last answer. Under each owner message, for each of its turns that stopped or failed, the reads its
+    /// lost messages held and why it failed; a usage line for every turn, the last turn's after its last message.
     private func rows(of conversation: Conversation, car: MechanicCar?) -> [ChatRow] {
         let messages = conversation.messages
         let lastAnswer = messages.lastIndex { $0["role"]?.string == "assistant" }
-        // A turn ends at the message before the next owner message, so a question that got no answer (an error)
-        // is not counted into the turn before it.
-        let isOwner = { (message: JSON) in
-            message["role"]?.string == "user"
-                && (message["content"]?.array ?? []).contains { $0["type"]?.string == "text" }
-        }
-        var usage: [Int: TurnRecord] = [:]
-        for turn in conversation.turns {
-            let next = messages.indices.first { $0 > turn.messageIndex && isOwner(messages[$0]) }
-            usage[(next ?? messages.count) - 1] = turn
+        // The turns that ran each owner message, as indices into `turns`, which keep their ids stable: several when
+        // a turn failed or was stopped before any text and Try again ran the message again.
+        let turnsOf = Dictionary(grouping: conversation.turns.indices) { conversation.turns[$0].messageIndex }
+        // The last of them ends at the message before the next owner message, so a question that got no answer is
+        // not counted into the turn before it; the turns before it left no message.
+        var ends: [Int: Int] = [:]
+        for (owner, turns) in turnsOf {
+            let next = messages.indices.first { $0 > owner && AIFlow.isOwnerMessage(messages[$0]) }
+            ends[(next ?? messages.count) - 1] = turns.last
         }
         var rows: [ChatRow] = []
+        func usageLine(_ turn: Int) {
+            let record = conversation.turns[turn]
+            let cost = ai.settings.prices.cost(of: record.usage, model: record.model)
+            rows.append(ChatRow(id: "turn\(turn).usage", kind: .usage(record, cost: cost)))
+        }
         for (index, message) in messages.enumerated() {
             let content = message["content"]?.array ?? []
             if message["role"]?.string == "assistant" {
                 // The tool results answering this message's calls, in the message after it.
                 let results = index + 1 < messages.count ? messages[index + 1]["content"]?.array ?? [] : []
+                // Each run of text blocks, as a cited answer arrives split at its citations, by its last block.
+                let runs = Dictionary(
+                    uniqueKeysWithValues: Transcript.textRuns(in: content).map { ($0.lastBlockIndex, $0.text) })
                 let lastText = content.lastIndex { $0["type"]?.string == "text" }
                 for (place, block) in content.enumerated() {
                     let id = "\(index).\(place)"
                     switch block["type"]?.string {
                     case "text":
-                        var text = block["text"]?.string ?? ""
+                        guard var text = runs[place] else { break }  // its run shows at the run's last block
                         var questions: [String] = []
                         if index == lastAnswer, place == lastText { (text, questions) = Chips.split(text) }
                         if !text.isEmpty { rows.append(ChatRow(id: id, kind: .mechanic(text))) }
@@ -108,10 +125,13 @@ struct ChatHistory: View {
                         if !sources.isEmpty { rows.append(ChatRow(id: id + ".sources", kind: .sources(sources))) }
                         if !questions.isEmpty { rows.append(ChatRow(id: id + ".chips", kind: .chips(questions))) }
                     case "tool_use":
-                        var line = "…"
-                        if let car, let result = results.first(where: {
+                        let result = results.first {
                             $0["type"]?.string == "tool_result" && $0["tool_use_id"] == block["id"]
-                        }) {
+                        }
+                        var line = "…"
+                        if result?["content"]?.string == ClaudeClient.roundCapResult {
+                            line = "Not run: tool limit reached"
+                        } else if let car, let result {
                             let call = ToolCall(
                                 id: block["id"]?.string ?? "", name: block["name"]?.string ?? "",
                                 input: block["input"] ?? .object([:]))
@@ -131,15 +151,25 @@ struct ChatHistory: View {
                         break  // thinking, the web tools' results, and anything a later API version adds
                     }
                 }
-            } else if index > 0 {
-                for (place, block) in content.enumerated() where block["type"]?.string == "text" {
-                    rows.append(ChatRow(id: "\(index).\(place)", kind: .owner(block["text"]?.string ?? "")))
+            } else if AIFlow.isOwnerMessage(message) {
+                if index > 0 {
+                    for (place, block) in content.enumerated() where block["type"]?.string == "text" {
+                        rows.append(ChatRow(id: "\(index).\(place)", kind: .owner(block["text"]?.string ?? "")))
+                    }
+                }
+                for turn in turnsOf[index] ?? [] {
+                    let record = conversation.turns[turn]
+                    // An answered turn's reads are in its messages; a stopped or failed one's were not kept.
+                    if record.stopped || record.error != nil {
+                        for (number, line) in record.activity.enumerated() {
+                            rows.append(ChatRow(id: "turn\(turn).\(number)", kind: .activity(line, link: nil)))
+                        }
+                    }
+                    if let error = record.error { rows.append(ChatRow(id: "turn\(turn).failed", kind: .failed(error))) }
+                    if turn != turnsOf[index]?.last { usageLine(turn) }
                 }
             }
-            if let turn = usage[index] {
-                let cost = ai.settings.prices.cost(of: turn.usage, model: turn.model)
-                rows.append(ChatRow(id: "\(index).usage", kind: .usage(turn, cost: cost)))
-            }
+            if let turn = ends[index] { usageLine(turn) }
         }
         return rows
     }
@@ -152,6 +182,8 @@ struct ChatRow: Identifiable {
         case mechanic(String)
         case chips([String])
         case activity(String, link: URL?)
+        /// Why a turn failed.
+        case failed(String)
         case sources([Sources.Source])
         case usage(TurnRecord, cost: Double?)
     }

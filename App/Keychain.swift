@@ -2,8 +2,13 @@ import Foundation
 import Security
 
 /// A Keychain call that did not succeed, with the status it returned.
-struct KeychainError: Error {
+struct KeychainError: Error, CustomStringConvertible {
     let status: OSStatus
+
+    /// What the system says the status means, or `Keychain error <status>` when it says nothing.
+    var description: String {
+        SecCopyErrorMessageString(status, nil).map { $0 as String } ?? "Keychain error \(status)"
+    }
 }
 
 /// The owner's Anthropic API key, kept in the Keychain as a generic password that stays on this device. The Mac uses

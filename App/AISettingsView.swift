@@ -2,7 +2,8 @@ import BMWCodingCore
 import SwiftUI
 
 /// The mechanic's settings, as a sheet: the API key, the model, the effort of chat turns, the prices the estimates
-/// use, what a conversation sends to Anthropic, and Clear conversations. Every change is saved as it is made.
+/// use, what a conversation sends to Anthropic, and Clear conversations. Every change is saved as it is made. The
+/// error, when there is one, shows under the key and under Clear conversations, the two ends of the sheet.
 struct AISettingsView: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -26,6 +27,7 @@ struct AISettingsView: View {
                         .foregroundStyle(.secondary)
                     Button("Remove key", role: .destructive) { ai.removeKey() }
                         .disabled(!ai.hasKey)
+                    errorLine
                 }
                 Section("Model") {
                     Picker("Model", selection: $ai.settings.model) {
@@ -60,6 +62,7 @@ struct AISettingsView: View {
                     // Not while a check or a turn runs: it would save its conversation again when it ends.
                     Button("Clear conversations", role: .destructive) { confirmingClear = true }
                         .disabled(flow.busy)
+                    errorLine
                 }
             }
             .formStyle(.grouped)
@@ -79,6 +82,13 @@ struct AISettingsView: View {
         #if os(macOS)
         .frame(minWidth: 420, minHeight: 560)
         #endif
+    }
+
+    /// `ai.error` in red, when it is set.
+    @ViewBuilder private var errorLine: some View {
+        if let error = ai.error {
+            Text(error).foregroundStyle(.red)
+        }
     }
 
     /// One price of `model` in the settings' price table.
