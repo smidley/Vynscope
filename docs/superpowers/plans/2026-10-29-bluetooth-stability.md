@@ -376,7 +376,7 @@ Pull the adapter during a backup and leave it out for more than a minute; expect
 
 - [ ] **Step 3: Ignition cycle and the sleeping adapter**
 
-Turn the ignition off and on during a scan; expect the reconnect to wait for the modules and continue, or the give-up after a minute if the car stays silent. Leave the app idle on the Car step for ten minutes; expect the adapter still connected (the keep-alive) and the log showing no drop.
+Turn the ignition off and on during a scan; expect the reconnect to wait for the modules and continue, or "The car did not answer after the adapter reconnected. Is the ignition on?" if the car stays silent. Leave the app idle on the Car step for ten minutes; expect the adapter still connected (the keep-alive) and the log showing no drop.
 
 - [ ] **Step 4: The signal warning and the log**
 
@@ -385,3 +385,15 @@ Put the phone in the back of the car; expect "Weak Bluetooth signal" within ten 
 - [ ] **Step 5: The iPhone locked**
 
 Start a backup, lock the phone, wait; expect the backup to finish.
+
+- [ ] **Step 6: An ignition cycle while idle**
+
+Sit idle on a step, cycle the ignition (or crank the engine), then run a scan; expect the scan to work after a short restoration.
+
+- [ ] **Step 7: Reconnect while the modules wake**
+
+When Reconnect shows after an ignition cycle, press it while the modules are still waking up; expect the same car back, or "No module answered with a VIN. Is the ignition on?" on the Connect step, with the car forgotten until it is read again.
+
+- [ ] **Step 8: The VIN wait is not a hang**
+
+After an ignition cycle during a scan or a backup, watch the progress: it can sit still for up to about two minutes while the restoration waits for the car's VIN. Expect the work to go on afterwards, or the car-silent message.

@@ -33,7 +33,7 @@ The app talks to the car through an OBDLink CX over Bluetooth LE. Real cars drop
 
 ### Link states
 
-The link keeps its states `off`, `scanning`, `connecting`, `ready` and `failed(message)`, and gains `reconnecting(since: Date)`. `reconnecting` is entered from `ready` when the system reports the adapter gone, when Bluetooth was not switched off by the owner, and when the keep-alive gets no answer twice. It is never entered from a disconnect the owner asked for, nor during a connect that has not yet reached `ready`.
+The link keeps its states `off`, `scanning`, `connecting`, `ready` and `failed(message)`, and gains `reconnecting(since: Date)`. `reconnecting` is entered from `ready` when the system reports the adapter gone, when Bluetooth goes off, when the keep-alive gets no answer twice, and when the probe after a command timeout gets no answer. It is never entered from a disconnect the owner asked for, nor during a connect that has not yet reached `ready`.
 
 The app shows `reconnecting` wherever it shows the adapter: the Connect step's adapter row reads "Reconnecting…", the step strip's Connect entry shows it in the warning color, and a step that is waiting on the adapter (Modules scanning, Backup, a chat turn's tool call) shows "Reconnecting to the adapter…" in place of its progress text. No alert, no modal.
 
@@ -45,9 +45,9 @@ While `reconnecting`, the link asks the system to connect to the same adapter it
 
 The link never resends a command by itself, because a re-powered adapter has forgotten its setup (echo off, headers, protocol) and the module it was addressing, and a raw resend would reach it in that state. Instead: `send` on a link that is `reconnecting`, and a `send` whose command was in flight when the drop happened, wait for the link to be `ready` again, bounded by the same 60-second window, and then throw a new `LinkError.reconnected`. Only a command whose reply had not arrived ends this way; one that had completed is never repeated.
 
-`Diag` catches `reconnected` on every operation it runs (a DID read, a fault read, a tester-present, the standard-OBD requests, the setup itself): it runs its adapter setup again, re-identifies the car (below), restores the addressing it had (the module select, or the standard-OBD mode), and then runs the whole operation again from its start, not just the line that was cut. Its callers see a slow call, not an error. These restored steps are the setup and the select `Diag` already sends; nothing new goes on the wire. An operation is restored and rerun at most three times; a fourth `reconnected` fails it with `LinkError.disconnected`, so a link that keeps dropping cannot loop forever.
+`Diag` catches `reconnected` on every operation it runs (a DID read, a fault read, a tester-present, the standard-OBD requests, the setup itself): it runs its adapter setup again, re-identifies the car (below), restores the addressing it had (the module select, or the standard-OBD mode), and then runs the whole operation again from its start, not just the line that was cut. Its callers see a slow call, not an error. These restored steps are the setup and the select `Diag` already sends; nothing new goes on the wire. A reconnect that happened while nothing was being sent is restored the same way, before the next command goes out, because the link refuses that first command once with `reconnected`. An operation is restored and rerun at most three times; a fourth `reconnected` fails it with `DiagError.keptDropping` ("The adapter kept dropping. Reconnect when it is in range."), so a link that keeps dropping cannot loop forever.
 
-Re-identifying the car: after the setup is redone, `Diag` reads the VIN. After an ignition cycle the modules may stay silent for some seconds, so a VIN read that gets no answer is tried again every 2 seconds until the 60-second window of the drop that caused it runs out; the work never continues on an unverified car. A VIN that differs from the one the flow holds fails the operation with a message naming the problem ("A different car answered after the reconnect"), and the flow forgets the car and returns to the Connect step. A VIN that matches lets the operation go on, and the owner sees only the "Reconnecting…" state come and go.
+Re-identifying the car: after the setup is redone, `Diag` reads the VIN. After an ignition cycle the modules may stay silent for some seconds, so a VIN read that gets no answer is tried again: 30 tries, each read waiting its 1.5 seconds before a 2-second pause, about 105 seconds in all with a silent car, after which the operation fails with `DiagError.carSilent` ("The car did not answer after the adapter reconnected. Is the ignition on?"). A bus error line during that wait is retried like silence. The work never continues on an unverified car. A VIN that differs from the one the flow holds fails the operation with a message naming the problem ("A different car answered after the reconnect"), and the flow forgets the car and returns to the Connect step. A VIN that matches lets the operation go on, and the owner sees only the "Reconnecting…" state come and go.
 
 ### A timeout while connected
 
@@ -55,7 +55,7 @@ CoreBluetooth reports a lost link only after its supervision timeout, which can 
 
 ### Asking the owner
 
-When the minute runs out, the step the owner is on shows the failure message and a "Reconnect" button, in the same place that step shows its errors. Reconnect runs the flow's connect as the Connect step does, re-identifies the car, and, if it is the same car, leaves the owner on their step with the car still known; the action they were running (a scan, a backup) is theirs to start again. A different car, or no car, goes back to the Connect step as today.
+When the minute runs out, the step the owner is on shows the failure message and a "Reconnect" button, in the same place that step shows its errors. The button also appears after `keptDropping` and `carSilent`, when the link is connected but the diagnostics layer was dropped. Reconnect runs the flow's connect as the Connect step does, re-identifies the car, and, if it is the same car, leaves the owner on their step with the car still known; the action they were running (a scan, a backup) is theirs to start again. A different car, or no car, goes back to the Connect step as today. The flow's connect re-identifies the car the same way when it keeps it, the link having stayed up.
 
 ### Keep-alive
 
@@ -84,8 +84,8 @@ The app declares the Bluetooth central background mode, so the system keeps deli
 ## Tests the design asks for
 
 - A command in flight when the link drops ends in `reconnected` once the link is back; `Diag` then redoes the setup and the select and reruns the whole operation; a command that had completed is never repeated.
-- A VIN that differs after a reconnect fails the operation with its message and the flow returns to Connect; a VIN read that gets no answer is retried every 2 seconds and the operation fails only when the window runs out.
-- A fourth `reconnected` on one operation fails it with `disconnected`.
+- A VIN that differs after a reconnect fails the operation with its message and the flow returns to Connect; a VIN read that gets no answer, or a bus error, is retried every 2 seconds and the operation fails with `carSilent` after 30 tries.
+- A fourth `reconnected` on one operation fails it with `keptDropping`.
 - A timeout while `ready` sends `ATI` once: an answer gives `timeout` as today, no answer starts a reconnect and the operation is rerun after it.
 - The keep-alive is `ATI`, never a bare carriage return.
 - No reconnect within 60 seconds fails the waiting command with `disconnected` and the link ends in `failed` with the give-up message; a reconnect at 59 seconds succeeds.
