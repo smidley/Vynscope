@@ -294,6 +294,14 @@ func healthCheckStopsAtTheNextRequestAfterACancel(command: String) async throws 
     #expect(check.contextJSON.contains(#""obdError" : "CAN ERROR""#))
     #expect(link.sent.last == "03")  // the check ended there
 }
+@Test func aGiveUpInTheStandardOBDPartEndsTheCheck() async throws {
+    let link = FakeLink { cmd in
+        if cmd == "03" { throw LinkError.disconnected }  // the link gave up
+        return cmd.hasPrefix("AT") ? ["OK"] : ["NO DATA"] }
+    await #expect(throws: LinkError.disconnected) {
+        try await Mechanic(diag: Diag(link: link, log: Log()), car: testCar(), log: Log()).healthCheck { _ in }
+    }
+}
 
 // The provider seam.
 

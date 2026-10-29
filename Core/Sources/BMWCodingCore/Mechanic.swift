@@ -171,8 +171,9 @@ public final class Mechanic {
     /// The health check a conversation starts from: every module's fault codes, in order, then standard OBD-II,
     /// with `progress` told each step. A module that refuses or does not answer is recorded and the check goes on;
     /// a `LinkError` during the module reads, a `DiagError` at any step (another car, a silent car, a link that kept
-    /// dropping), or a cancel anywhere, ends it and is thrown. A `LinkError` during the standard requests ends only
-    /// them: the check keeps the modules and says why in `obdError`.
+    /// dropping), a link that gave up (`LinkError.disconnected`) at any step, or a cancel anywhere, ends it and is
+    /// thrown. An adapter error or a timeout during the standard requests ends only them: the check keeps the
+    /// modules and says why in `obdError`.
     public func healthCheck(progress: (String) -> Void) async throws -> HealthCheck {
         var modules: [HealthCheck.ModuleHealth] = []
         for module in car.modules {
@@ -187,8 +188,7 @@ public final class Mechanic {
             obdError = switch error {
             case .adapterError(let line): line
             case .timeout: "timeout"
-            case .disconnected: "disconnected"
-            case .reconnected: "reconnected"
+            case .disconnected, .reconnected: throw error  // the link gave up; `Diag` restores after a reconnect
             }
         }
         return HealthCheck(
