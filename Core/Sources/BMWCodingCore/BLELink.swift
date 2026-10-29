@@ -37,6 +37,9 @@ public final class BLELink: NSObject, CommandLink {
     private static let modelUUID = CBUUID(string: "2A24")
     private static let firmwareUUID = CBUUID(string: "2A26")
     private static let identifierKey = "adapterIdentifier"
+    /// The keep-alive and the probe: the adapter's own identify command, which never reaches the car. A bare carriage
+    /// return is never sent instead, as it repeats the last command, which could be a car read.
+    static let keepAliveCommand = "ATI"
 
     /// What a connect, a command or a reconnect's preparation suspends on. Each is ended by the delegate callback
     /// that reports it.
@@ -417,11 +420,9 @@ public final class BLELink: NSObject, CommandLink {
         try await waitForReconnect()
     }
 
-    /// Whether the adapter answers `ATI`, its own identify command, within 2 seconds: the keep-alive and the
-    /// probe. It never reaches the car. A bare carriage return is never sent instead, as it repeats the last
-    /// command, which could be a car read.
+    /// Whether the adapter answers `keepAliveCommand` within 2 seconds: the keep-alive and the probe.
     private func adapterAnswers() async -> Bool {
-        (try? await exchange("ATI", timeout: .seconds(2))) != nil
+        (try? await exchange(Self.keepAliveCommand, timeout: .seconds(2))) != nil
     }
 
     /// For a command sent while the link reconnects, or cut by the drop: waits for the link to be back, takes the

@@ -59,6 +59,15 @@ private extension LinkPolicy {
     #expect(policy.phase == .idle)
 }
 
+@Test func aReconnectAtFiftyNineSecondsSucceeds() {
+    var policy = LinkPolicy(after: ready() + [.dropped(t0, reason: "gone")])
+    #expect(policy.handle(.tick(t0 + 59)) == [])
+    #expect(policy.handle(.becameReady(t0 + 59))
+        == [.log("adapter reconnected after 59 s"), .warn("The adapter dropped and reconnected")])
+    #expect(policy.phase == .ready)
+    #expect(policy.handle(.tick(t0 + 60)) == [])  // no give-up
+}
+
 @Test func aDropWhileReconnectingAsksAgainWithinTheSameWindow() {
     var policy = LinkPolicy(after: ready() + [.dropped(t0, reason: "gone")])
     #expect(policy.handle(.dropped(t0 + 5, reason: "again")) == [.log("adapter dropped: again"), .startReconnect])
