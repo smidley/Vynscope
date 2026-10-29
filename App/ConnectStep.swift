@@ -50,7 +50,9 @@ struct ConnectStep: View {
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
         .task {
-            if flow.adapter == nil, UserDefaults.standard.string(forKey: Flow.adapterKey) != nil {
+            // At launch only: after a give-up or a Reconnect that failed, connecting again is the owner's to ask for.
+            if flow.link.state == .off, flow.adapter == nil,
+               UserDefaults.standard.string(forKey: Flow.adapterKey) != nil {
                 await flow.connect()
             }
         }

@@ -40,6 +40,7 @@ struct VynscopeApp: App {
 /// Log, Settings (the AI step has its own) and Next in the toolbar.
 struct FlowView: View {
     @Environment(Flow.self) private var flow
+    @Environment(AIFlow.self) private var ai
     @State private var showingSettings = false
 
     var body: some View {
@@ -47,19 +48,24 @@ struct FlowView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 StepIndicator()
-                if let error = flow.error ?? gaveUp {
+                if let error = flow.error ?? reconnectReason {
                     Text(error)
                         .foregroundStyle(.red)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
                 }
-                if flow.step != .connect, flow.diag == nil || gaveUp != nil {
-                    Button("Reconnect") { Task { await flow.reconnect() } }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(flow.busy || flow.reconnecting)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal)
-                        .padding(.top, 4)
+                if reconnectReason != nil {
+                    Button(flow.busy ? "Reconnecting…" : "Reconnect") {
+                        Task {
+                            await flow.reconnect()
+                            if flow.diag != nil { ai.error = nil }  // the AI step's line that asked for it
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(flow.busy || flow.reconnecting)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+                    .padding(.top, 4)
                 }
                 switch flow.step {
                 case .connect: ConnectStep()
@@ -101,11 +107,13 @@ struct FlowView: View {
         #endif
     }
 
-    /// The link's message once it has given up, on any step but Connect, whose adapter row says it; it stands in for
-    /// the error when no action failed with it, as when nothing was running.
-    private var gaveUp: String? {
-        guard flow.step != .connect, case .failed(let message) = flow.link.state else { return nil }
-        return message
+    /// Why the step offers Reconnect, on any step but Connect (whose adapter row says how the link is): the link's
+    /// message once it has given up, else, while an action's error dropped the adapter (`Flow.explain`), that it needs
+    /// setting up. It stands in for the error when none shows: nothing was running, or Back or Next cleared it.
+    private var reconnectReason: String? {
+        guard flow.step != .connect else { return nil }
+        if case .failed(let message) = flow.link.state { return message }
+        return flow.diag == nil ? "The adapter needs to be set up again." : nil
     }
 }
 
