@@ -50,6 +50,9 @@ public final class Diag {
     /// True while a restoration sets the adapter up and reads the VIN: the operations of that read then let a
     /// reconnect through to the operation being restored, so a drop during a restoration counts and never nests.
     private var restoring = false
+    /// True from the start of a restoration until its car check passed, or found no car to check: a restoration
+    /// that failed part-way leaves it set, and the next operation restores the adapter before it runs.
+    private var carUnchecked = false
 
     public init(link: CommandLink, log: Log) {
         self.link = link
@@ -156,17 +159,24 @@ public final class Diag {
 
     /// Runs `operation`; when the link reports a reconnect, restores the adapter and runs it again from its start
     /// (or `rerun` in its place), `restorations` times at most, then fails with `DiagError.keptDropping`. A
-    /// reconnect during a restoration ends that restoration and counts as the next one.
+    /// reconnect during a restoration ends that restoration and counts as the next one. An operation that begins
+    /// after a restoration failed part-way restores first, so it never runs against a car that was not checked.
     private func resilient<T>(
         _ operation: () async throws -> T, rerun: (() async throws -> T)? = nil
     ) async throws -> T {
+        let saved = (obd: addressing == .obd, module: selected)  // the addressing the operation began with
         for attempt in 0...Self.restorations {
             do {
-                guard attempt > 0 else { return try await operation() }
-                log.note("the link reconnected: restoring the adapter, then running the cut operation again "
-                    + "(\(attempt) of \(Self.restorations))")
+                if attempt > 0 {
+                    log.note("the link reconnected: restoring the adapter, then running the cut operation again "
+                        + "(\(attempt) of \(Self.restorations))")
+                } else if carUnchecked && !restoring {
+                    log.note("the last restoration did not finish: restoring the adapter before this operation")
+                } else {
+                    return try await operation()
+                }
                 if let rerun { return try await rerun() }
-                try await restore()
+                try await restore(saved)
                 return try await operation()
             } catch LinkError.reconnected where !restoring {}  // the next attempt restores the adapter
         }
@@ -174,13 +184,13 @@ public final class Diag {
         throw DiagError.keptDropping
     }
 
-    /// After a reconnect: the setup again, the car checked, the addressing put back as it was.
-    private func restore() async throws {
-        let wasOBD = addressing == .obd, module = selected
+    /// After a reconnect: the setup again, the car checked, and the addressing the operation began with put back,
+    /// whatever an earlier restoration of it left.
+    private func restore(_ saved: (obd: Bool, module: UInt8?)) async throws {
         _ = try await setUpAndCheckCar()
-        if wasOBD {
+        if saved.obd {
             try await rawSwitchToOBD()
-        } else if let module {
+        } else if let module = saved.module {
             selected = nil  // sent again even when the VIN read left the adapter on that module
             try await rawSelect(module)
         }
@@ -190,14 +200,16 @@ public final class Diag {
     /// while no module answers or the bus reports an error, so the work never goes on against another car or one
     /// that was not checked. Any other error of the read ends the restoration.
     private func setUpAndCheckCar() async throws -> AdapterInfo {
+        carUnchecked = true  // until the check below passes
         restoring = true
         defer { restoring = false }
         let info = try await rawSetUp()
-        guard let expectedVIN else { return info }
+        guard let expectedVIN else { carUnchecked = false; return info }
         for _ in 0..<Self.vinRetries {
             do {
                 let vin = try await VIN.read(diag: self)
                 guard vin == expectedVIN else { throw DiagError.differentCar(vin) }
+                carUnchecked = false
                 return info
             } catch VINError.noVIN, LinkError.adapterError {  // silent, or a bus error line while the car wakes
                 try await sleep(Self.vinRetryInterval)

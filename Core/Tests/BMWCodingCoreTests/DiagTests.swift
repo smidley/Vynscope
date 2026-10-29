@@ -377,6 +377,9 @@ private let fixtureVIN = ["640 F1 10 14 62 F1 90 57 42", "640 F1 21 59 37 33 41 
 /// The operation the tests below cut, a read of 3000 from module 40, and its answer `01 02`.
 private let read3000 = "40 03 22 30 00 00 00 00"
 private let answer3000 = ["640 F1 05 62 30 00 01 02 00"]
+/// The same read from module 10, which answers on 610: not the module the VIN read leaves selected.
+private let read10 = "10 03 22 30 00 00 00 00"
+private let answer10 = ["610 F1 05 62 30 00 01 02 00"]
 /// What a restoration's setup sends: the reset, the init sequence and the three identity commands.
 private let setUpCommands: [String] = ["ATZ"] + ELM.initSequence + ["ATI", "STI", "STDI"]
 
@@ -494,23 +497,50 @@ private let setUpCommands: [String] = ["ATZ"] + ELM.initSequence + ["ATI", "STI"
                 vinReads += 1
                 if vinReads <= vinCuts { throw LinkError.reconnected }
                 return fixtureVIN
-            case read3000: return answer3000
+            case read10: return answer10
             default: break
             }
             return ["OK"] }
         let diag = Diag(link: link, log: Log())
         _ = try await diag.setUp()
-        try await diag.select(module: 0x40)
+        try await diag.select(module: 0x10)
         diag.expectedVIN = "WBY73AW04RFFAKE19"
         link.dropAfter = 1  // the read's request
         return (diag, link)
     }
     let (diag, link) = try await cutRead(vinCuts: 0)
-    #expect(try await diag.readDID(0x40, 0x3000) == .positive([0x01, 0x02]))
+    #expect(try await diag.readDID(0x10, 0x3000) == .positive([0x01, 0x02]))
     #expect(link.sent.filter { $0 == "ATZ" }.count == 3)  // the setup, the cut restoration, the second one
+    // the second restoration puts back module 10, which the operation began with, after the VIN read moved to 40
+    #expect(Array(link.sent.suffix(3)) == ["ATCRA 610", "ATFCSD 10 30 00 00", read10])
     let (capped, cappedLink) = try await cutRead(vinCuts: 2)
-    await #expect(throws: DiagError.keptDropping) { try await capped.readDID(0x40, 0x3000) }
+    await #expect(throws: DiagError.keptDropping) { try await capped.readDID(0x10, 0x3000) }
     #expect(cappedLink.sent.filter { $0 == "ATZ" }.count == 1 + 3)
+}
+@Test func anUnfinishedRestorationChecksTheCarBeforeTheNextOperation() async throws {
+    var vinTimesOut = true
+    let link = FakeLink { cmd in
+        switch cmd {
+        case "40 03 22 F1 90 00 00 00":
+            if vinTimesOut { throw LinkError.timeout }
+            return fixtureVIN
+        case read3000: return answer3000
+        default: return ["OK"] } }
+    let diag = Diag(link: link, log: Log())
+    _ = try await diag.setUp()
+    try await diag.select(module: 0x40)
+    diag.expectedVIN = "WBY73AW04RFFAKE19"
+    link.dropAfter = 1  // the read's request
+    await #expect(throws: LinkError.timeout) { try await diag.readDID(0x40, 0x3000) }  // the restoration's VIN read
+    vinTimesOut = false
+    let next = link.sent.count
+    #expect(try await diag.readDID(0x40, 0x3000) == .positive([0x01, 0x02]))
+    let vinRead: [String] = ["ATCRA 640", "ATFCSD 40 30 00 00", "40 03 22 F1 90 00 00 00"]
+    let select: [String] = ["ATCRA 640", "ATFCSD 40 30 00 00"]
+    #expect(Array(link.sent[next...]) == setUpCommands + vinRead + select + [read3000])  // the car checked first
+    let after = link.sent.count
+    _ = try await diag.readDID(0x40, 0x3000)
+    #expect(Array(link.sent[after...]) == [read3000])  // checked: the next read goes out alone
 }
 @Test func aCompletedCommandIsNeverRepeated() async throws {
     let link = FakeLink { cmd in
