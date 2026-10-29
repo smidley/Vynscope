@@ -39,7 +39,7 @@ The app shows `reconnecting` wherever it shows the adapter: the Connect step's a
 
 ### Reconnecting
 
-While `reconnecting`, the link asks the system to connect to the same adapter it had. CoreBluetooth keeps such a request pending until the adapter is in range again, so one request is the retry loop; the link does not scan. When the adapter connects, the link rediscovers its services and characteristics and subscribes again, then returns to `ready`. If it is not `ready` within 60 seconds of entering `reconnecting`, the link cancels the pending request, moves to `failed("The adapter did not come back. Reconnect when it is in range.")`, and fails whatever was waiting with `LinkError.disconnected`. The 60 seconds are wall clock, so that the window holds when the phone is locked.
+While `reconnecting`, the link asks the system to connect to the same adapter it had. CoreBluetooth keeps such a request pending until the adapter is in range again, so one request is the retry loop; the link does not scan. When the adapter connects, the link rediscovers its services and characteristics and subscribes again, then returns to `ready`. If it is not `ready` within 60 seconds of entering `reconnecting`, the link cancels the pending request, moves to `failed("The adapter did not come back. Reconnect when it is in range.")` (or, with Bluetooth off at that moment, `failed("Bluetooth is off. Switch it on and reconnect.")`), and fails whatever was waiting with `LinkError.disconnected`. The 60 seconds are wall clock, so that the window holds when the phone is locked.
 
 ### Commands during a reconnect
 

@@ -307,7 +307,11 @@ public final class BLELink: NSObject, CommandLink {
         for action in actions {
             switch action {
             case .startReconnect: startReconnect()
-            case .giveUp(let message): tearDown(.failed(message))  // which cancels the request and fails the gate
+            case .giveUp(let message):
+                // The tear-down cancels the request and fails the gate. The policy cannot see the radio: with
+                // Bluetooth off, that is why the adapter did not come back.
+                let bluetoothOff = central?.state != .poweredOn
+                tearDown(.failed(bluetoothOff ? "Bluetooth is off. Switch it on and reconnect." : message))
             case .sendKeepAlive: keepAlive()
             case .sendProbe, .failTimedOut: break  // carried out by `probe`
             case .warn(let text): warning = text
