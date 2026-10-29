@@ -30,14 +30,15 @@ public final class Diag {
     /// The VIN of the car the flow holds, read again by a restoration before the cut operation runs again, so the
     /// work never goes on against another car. Nil before a car is read; a restoration then checks no car.
     public var expectedVIN: String?
-    /// How a restoration waits after a VIN read that no module answered; tests replace it.
+    /// How a restoration waits after a VIN read that failed (no module answered, or a bus error); tests replace it.
     public var sleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
-    /// After an ignition cycle the modules may stay silent for some seconds, so a restoration reads the VIN up to
-    /// `vinRetries` times and waits `vinRetryInterval` after each silent read: a minute, the window of the drop.
+    /// After an ignition cycle the modules may stay silent, or the bus report errors, for some seconds, so a
+    /// restoration reads the VIN up to `vinRetries` times and waits `vinRetryInterval` after each read that fails so.
+    /// With a silent car that is about two minutes, since each read takes about 1.5 s before its 2 s pause.
     public static let vinRetryInterval: Duration = .seconds(2)
     public static let vinRetries = 30
     /// How many times one operation is restored and run again; a further reconnect fails it with
-    /// `LinkError.disconnected`, so a link that keeps dropping cannot loop forever.
+    /// `DiagError.keptDropping`, so a link that keeps dropping cannot loop forever.
     public static let restorations = 3
     private let link: CommandLink
     private let log: Log
@@ -154,7 +155,7 @@ public final class Diag {
     }
 
     /// Runs `operation`; when the link reports a reconnect, restores the adapter and runs it again from its start
-    /// (or `rerun` in its place), `restorations` times at most, then fails with `LinkError.disconnected`. A
+    /// (or `rerun` in its place), `restorations` times at most, then fails with `DiagError.keptDropping`. A
     /// reconnect during a restoration ends that restoration and counts as the next one.
     private func resilient<T>(
         _ operation: () async throws -> T, rerun: (() async throws -> T)? = nil
@@ -170,7 +171,7 @@ public final class Diag {
             } catch LinkError.reconnected where !restoring {}  // the next attempt restores the adapter
         }
         log.note("the link reconnected again after \(Self.restorations) restorations of one operation: giving up")
-        throw LinkError.disconnected
+        throw DiagError.keptDropping
     }
 
     /// After a reconnect: the setup again, the car checked, the addressing put back as it was.
@@ -186,7 +187,8 @@ public final class Diag {
     }
 
     /// A restoration's setup, then the car checked when one is expected: its VIN is read up to `vinRetries` times
-    /// while no module answers, so the work never goes on against another car or one that was not checked.
+    /// while no module answers or the bus reports an error, so the work never goes on against another car or one
+    /// that was not checked. Any other error of the read ends the restoration.
     private func setUpAndCheckCar() async throws -> AdapterInfo {
         restoring = true
         defer { restoring = false }
@@ -197,12 +199,12 @@ public final class Diag {
                 let vin = try await VIN.read(diag: self)
                 guard vin == expectedVIN else { throw DiagError.differentCar(vin) }
                 return info
-            } catch VINError.noVIN {
+            } catch VINError.noVIN, LinkError.adapterError {  // silent, or a bus error line while the car wakes
                 try await sleep(Self.vinRetryInterval)
             }
         }
-        log.note("no module answered with the VIN after the reconnect, \(Self.vinRetries) tries: giving up")
-        throw LinkError.disconnected
+        log.note("the car did not answer with its VIN after the reconnect, \(Self.vinRetries) tries: giving up")
+        throw DiagError.carSilent
     }
 
     /// The setup itself, for `setUp()` and for a restoration.

@@ -448,19 +448,37 @@ private let setUpCommands: [String] = ["ATZ"] + ELM.initSequence + ["ATI", "STI"
 
     (silentReads, vinReads, slept) = (30, 0, [])
     link.dropAfter = 1
-    await #expect(throws: LinkError.disconnected) { try await diag.readDID(0x40, 0x3000) }
+    await #expect(throws: DiagError.carSilent) { try await diag.readDID(0x40, 0x3000) }
     #expect(slept == Array(repeating: .seconds(2), count: 30))
 }
-@Test func aFourthReconnectFailsWithDisconnected() async throws {
+@Test func aFourthReconnectFailsWithKeptDropping() async throws {
     let link = FakeLink { cmd in
         if cmd == read3000 { throw LinkError.reconnected }  // cut every time: the first run and every rerun
         return ["OK"] }
     let diag = Diag(link: link, log: Log())
     _ = try await diag.setUp()
     try await diag.select(module: 0x40)
-    await #expect(throws: LinkError.disconnected) { try await diag.readDID(0x40, 0x3000) }
+    await #expect(throws: DiagError.keptDropping) { try await diag.readDID(0x40, 0x3000) }
     #expect(link.sent.filter { $0 == read3000 }.count == 4)
     #expect(link.sent.filter { $0 == "ATZ" }.count == 1 + 3)  // the first setup's, then three restorations
+}
+@Test func aBusErrorWhileTheCarWakesIsAskedAgainLikeSilence() async throws {
+    var vinReads = 0
+    var slept: [Duration] = []
+    let link = FakeLink { cmd in
+        switch cmd {
+        case "40 03 22 F1 90 00 00 00":
+            vinReads += 1
+            return vinReads <= 2 ? ["CAN ERROR"] : fixtureVIN
+        case read3000: return answer3000
+        default: return ["OK"] } }
+    let diag = Diag(link: link, log: Log())
+    diag.sleep = { slept.append($0) }
+    try await diag.select(module: 0x40)
+    diag.expectedVIN = "WBY73AW04RFFAKE19"
+    link.dropAfter = 1  // the read's request
+    #expect(try await diag.readDID(0x40, 0x3000) == .positive([0x01, 0x02]))
+    #expect(slept == [.seconds(2), .seconds(2)])
 }
 @Test func aDropDuringTheRestorationCountsAndDoesNotRecurse() async throws {
     // The read of 3000 is cut; then the link drops again during the restorations: at the first one's reset, and at
@@ -491,7 +509,7 @@ private let setUpCommands: [String] = ["ATZ"] + ELM.initSequence + ["ATI", "STI"
     #expect(try await diag.readDID(0x40, 0x3000) == .positive([0x01, 0x02]))
     #expect(link.sent.filter { $0 == "ATZ" }.count == 3)  // the setup, the cut restoration, the second one
     let (capped, cappedLink) = try await cutRead(vinCuts: 2)
-    await #expect(throws: LinkError.disconnected) { try await capped.readDID(0x40, 0x3000) }
+    await #expect(throws: DiagError.keptDropping) { try await capped.readDID(0x40, 0x3000) }
     #expect(cappedLink.sent.filter { $0 == "ATZ" }.count == 1 + 3)
 }
 @Test func aCompletedCommandIsNeverRepeated() async throws {
