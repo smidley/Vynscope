@@ -16,7 +16,9 @@ public enum Addressing: Equatable, Sendable {
 
 /// Adapter setup, UDS requests to one module at a time and standard OBD-II requests to every controller at
 /// once. The adapter is a single serial channel, so callers make one call at a time; overlapping calls would
-/// mix up their replies.
+/// mix up their replies. When the link reports a reconnect, an operation restores the adapter (its setup, the car
+/// checked against `expectedVIN`, the addressing it had) and runs again from its start, `restorations` times at
+/// most: its caller sees a slow call, not an error.
 public final class Diag {
     /// How long the adapter may take over one vehicle request.
     public var readTimeout: Duration = .milliseconds(1500)
@@ -25,6 +27,18 @@ public final class Diag {
     /// switch answered `OK`; after one that failed part-way, whichever of `obd(_:)` and `select(module:)` comes
     /// next does its whole switch.
     public private(set) var addressing: Addressing = .bmw
+    /// The VIN of the car the flow holds, read again by a restoration before the cut operation runs again, so the
+    /// work never goes on against another car. Nil before a car is read; a restoration then checks no car.
+    public var expectedVIN: String?
+    /// How a restoration waits after a VIN read that no module answered; tests replace it.
+    public var sleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    /// After an ignition cycle the modules may stay silent for some seconds, so a restoration reads the VIN up to
+    /// `vinRetries` times and waits `vinRetryInterval` after each silent read: a minute, the window of the drop.
+    public static let vinRetryInterval: Duration = .seconds(2)
+    public static let vinRetries = 30
+    /// How many times one operation is restored and run again; a further reconnect fails it with
+    /// `LinkError.disconnected`, so a link that keeps dropping cannot loop forever.
+    public static let restorations = 3
     private let link: CommandLink
     private let log: Log
     /// The module the adapter's receive filter and flow-control address are set for, when known.
@@ -32,6 +46,9 @@ public final class Diag {
     /// False from the first command of a switch between the addressings until its last one answered `OK`: the
     /// adapter may then be set up for neither, so the next `obd(_:)` or `select(module:)` does its switch again.
     private var settled = true
+    /// True while a restoration sets the adapter up and reads the VIN: the operations of that read then let a
+    /// reconnect through to the operation being restored, so a drop during a restoration counts and never nests.
+    private var restoring = false
 
     public init(link: CommandLink, log: Log) {
         self.link = link
@@ -41,15 +58,8 @@ public final class Diag {
     /// Resets the adapter, applies `ELM.initSequence` (BMW addressing) and reads its identity. Throws
     /// `LinkError.adapterError("<command>: <answer>")` for the first setup command that does not answer `OK`.
     public func setUp() async throws -> AdapterInfo {
-        selected = nil  // the reset wipes the adapter's filter
-        _ = try await send("ATZ", timeout: .seconds(3))
-        addressing = .bmw  // the reset dropped any OBD setup; the sequence below is BMW's
-        settled = true  // and whatever a switch that failed part-way had left
-        for command in ELM.initSequence { try await expectOK(command) }
-        let elmVersion = try await identity("ATI")
-        let firmware = try await identity("STI")
-        let model = try await identity("STDI")
-        return AdapterInfo(model: model, firmware: firmware, elmVersion: elmVersion)
+        // After a reconnect the restoration's own setup is this one: the adapter is not set up twice.
+        try await resilient(rawSetUp, rerun: setUpAndCheckCar)
     }
 
     /// Points the adapter at `module`: it passes on only that module's frames and sends its flow control
@@ -57,31 +67,23 @@ public final class Diag {
     /// part-way, it first sets BMW addressing up again (every command must answer `OK`), which forgets the
     /// module selected before, so it is set again.
     public func select(module: UInt8) async throws {
-        if addressing == .obd || !settled {
-            settled = false
-            for command in ELM.bmwSequence { try await expectOK(command) }
-            addressing = .bmw
-            selected = nil  // `ATAR` dropped the filter, so even the module selected before must be set again
-            settled = true
-        }
-        guard module != selected else { return }
-        selected = nil  // the adapter's state is unknown until both commands are acknowledged
-        try await expectOK("ATCRA \(String(responseID(module), radix: 16, uppercase: true))")
-        try await expectOK("ATFCSD \(ISOTP.hexLine([module])) 30 00 00")
-        selected = module
+        try await resilient { try await rawSelect(module) }
     }
 
     /// Sends one UDS request to `module`, which must be set up and selected, and reads its whole answer,
     /// doing the flow-control round trip by hand when the answer has several frames. Throws
-    /// `LinkError.adapterError` as soon as the adapter prints an error line.
+    /// `LinkError.adapterError` as soon as the adapter prints an error line. The four UDS operations below all
+    /// send through here, so this is where they run again after a reconnect.
     func request(_ module: UInt8, _ payload: [UInt8]) async throws -> UDSResult {
-        let result = try await exchange(module, payload)
-        guard result == .negative(0x78) else { return result }
-        // ponytail: one fixed wait and one re-ask; a module that stays pending longer reads as
-        // .negative(0x78). Add a capped loop if a slow module turns up.
-        log.note("module \(ISOTP.hexLine([module])) answered response pending (0x78), asking again in 500 ms")
-        try await Task.sleep(for: .milliseconds(500))
-        return try await exchange(module, payload)
+        try await resilient {
+            let result = try await exchange(module, payload)
+            guard result == .negative(0x78) else { return result }
+            // ponytail: one fixed wait and one re-ask; a module that stays pending longer reads as
+            // .negative(0x78). Add a capped loop if a slow module turns up.
+            log.note("module \(ISOTP.hexLine([module])) answered response pending (0x78), asking again in 500 ms")
+            try await Task.sleep(for: .milliseconds(500))
+            return try await exchange(module, payload)
+        }
     }
 
     /// Reads data identifier `did` (service `0x22`). A positive carries only the data, without the
@@ -123,17 +125,14 @@ public final class Diag {
     /// the adapter prints an error line. The payload is sent as given: the caller enforces the read-only
     /// allow-list.
     public func obd(_ payload: [UInt8]) async throws -> [UInt16: [UInt8]] {
-        if addressing != .obd || !settled {
-            settled = false
-            selected = nil  // `ATAR` drops the receive filter, so a module read after this must be selected again
-            for command in ELM.obdSequence { try await expectOK(command) }
-            addressing = .obd
-            settled = true
+        let lines = try await resilient {
+            try await rawSwitchToOBD()
+            return try await send(ISOTP.hexLine(payload), timeout: readTimeout)
         }
         // ponytail: no wait and re-ask on 0x78 (response pending) as in `request(_:_:)`; a controller still
         // pending is left out like any negative answer. Add the re-ask if one turns up.
         var frames: [UInt16: [[UInt8]]] = [:]  // by CAN id, in the order received
-        for line in try await send(ISOTP.hexLine(payload), timeout: readTimeout) {
+        for line in lines {
             switch ELM.parse(line) {
             case .frame(let id, let data) where (0x7E8...0x7EF).contains(id) && !data.isEmpty:
                 frames[id, default: []].append([0x00] + data)  // `reassemble` expects an address byte first
@@ -152,6 +151,98 @@ public final class Diag {
             }
         }
         return answers
+    }
+
+    /// Runs `operation`; when the link reports a reconnect, restores the adapter and runs it again from its start
+    /// (or `rerun` in its place), `restorations` times at most, then fails with `LinkError.disconnected`. A
+    /// reconnect during a restoration ends that restoration and counts as the next one.
+    private func resilient<T>(
+        _ operation: () async throws -> T, rerun: (() async throws -> T)? = nil
+    ) async throws -> T {
+        for attempt in 0...Self.restorations {
+            do {
+                guard attempt > 0 else { return try await operation() }
+                log.note("the link reconnected: restoring the adapter, then running the cut operation again "
+                    + "(\(attempt) of \(Self.restorations))")
+                if let rerun { return try await rerun() }
+                try await restore()
+                return try await operation()
+            } catch LinkError.reconnected where !restoring {}  // the next attempt restores the adapter
+        }
+        log.note("the link reconnected again after \(Self.restorations) restorations of one operation: giving up")
+        throw LinkError.disconnected
+    }
+
+    /// After a reconnect: the setup again, the car checked, the addressing put back as it was.
+    private func restore() async throws {
+        let wasOBD = addressing == .obd, module = selected
+        _ = try await setUpAndCheckCar()
+        if wasOBD {
+            try await rawSwitchToOBD()
+        } else if let module {
+            selected = nil  // sent again even when the VIN read left the adapter on that module
+            try await rawSelect(module)
+        }
+    }
+
+    /// A restoration's setup, then the car checked when one is expected: its VIN is read up to `vinRetries` times
+    /// while no module answers, so the work never goes on against another car or one that was not checked.
+    private func setUpAndCheckCar() async throws -> AdapterInfo {
+        restoring = true
+        defer { restoring = false }
+        let info = try await rawSetUp()
+        guard let expectedVIN else { return info }
+        for _ in 0..<Self.vinRetries {
+            do {
+                let vin = try await VIN.read(diag: self)
+                guard vin == expectedVIN else { throw DiagError.differentCar(vin) }
+                return info
+            } catch VINError.noVIN {
+                try await sleep(Self.vinRetryInterval)
+            }
+        }
+        log.note("no module answered with the VIN after the reconnect, \(Self.vinRetries) tries: giving up")
+        throw LinkError.disconnected
+    }
+
+    /// The setup itself, for `setUp()` and for a restoration.
+    private func rawSetUp() async throws -> AdapterInfo {
+        selected = nil  // the reset wipes the adapter's filter
+        _ = try await send("ATZ", timeout: .seconds(3))
+        addressing = .bmw  // the reset dropped any OBD setup; the sequence below is BMW's
+        settled = true  // and whatever a switch that failed part-way had left
+        for command in ELM.initSequence { try await expectOK(command) }
+        let elmVersion = try await identity("ATI")
+        let firmware = try await identity("STI")
+        let model = try await identity("STDI")
+        return AdapterInfo(model: model, firmware: firmware, elmVersion: elmVersion)
+    }
+
+    /// The select itself, for `select(module:)` and for a restoration.
+    private func rawSelect(_ module: UInt8) async throws {
+        if addressing == .obd || !settled {
+            settled = false
+            for command in ELM.bmwSequence { try await expectOK(command) }
+            addressing = .bmw
+            selected = nil  // `ATAR` dropped the filter, so even the module selected before must be set again
+            settled = true
+        }
+        guard module != selected else { return }
+        selected = nil  // the adapter's state is unknown until both commands are acknowledged
+        try await expectOK("ATCRA \(String(responseID(module), radix: 16, uppercase: true))")
+        try await expectOK("ATFCSD \(ISOTP.hexLine([module])) 30 00 00")
+        selected = module
+    }
+
+    /// The switch to standard OBD addressing that `obd(_:)` makes first, for it and for a restoration; nothing
+    /// when the adapter is in it already.
+    private func rawSwitchToOBD() async throws {
+        guard addressing != .obd || !settled else { return }
+        settled = false
+        selected = nil  // `ATAR` drops the receive filter, so a module read after this must be selected again
+        for command in ELM.obdSequence { try await expectOK(command) }
+        addressing = .obd
+        settled = true
     }
 
     /// One request and its whole answer, with the flow-control round trip for a multi-frame one.
