@@ -29,7 +29,7 @@ struct AIStep: View {
             } else if case .checking(let step) = ai.phase {
                 Form {
                     Section {
-                        ProgressView(step)
+                        ProgressView(flow.reconnecting ? "Reconnecting to the adapter…" : step)
                         Button("Stop") { ai.stop() }
                     }
                 }

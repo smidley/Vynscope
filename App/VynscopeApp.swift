@@ -36,8 +36,8 @@ struct VynscopeApp: App {
     }
 }
 
-/// The current step under the step indicator, with Back, Log, Settings (the AI step has its own) and Next in the
-/// toolbar.
+/// The current step under the step indicator and its error, with Reconnect there while the adapter is gone, and Back,
+/// Log, Settings (the AI step has its own) and Next in the toolbar.
 struct FlowView: View {
     @Environment(Flow.self) private var flow
     @State private var showingSettings = false
@@ -46,12 +46,20 @@ struct FlowView: View {
         @Bindable var flow = flow
         NavigationStack {
             VStack(spacing: 0) {
-                StepIndicator(current: flow.step)
-                if let error = flow.error {
+                StepIndicator()
+                if let error = flow.error ?? gaveUp {
                     Text(error)
                         .foregroundStyle(.red)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
+                }
+                if flow.step != .connect, flow.diag == nil || gaveUp != nil {
+                    Button("Reconnect") { Task { await flow.reconnect() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(flow.busy || flow.reconnecting)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                        .padding(.top, 4)
                 }
                 switch flow.step {
                 case .connect: ConnectStep()
@@ -92,18 +100,28 @@ struct FlowView: View {
         }
         #endif
     }
+
+    /// The link's message once it has given up, on any step but Connect, whose adapter row says it; it stands in for
+    /// the error when no action failed with it, as when nothing was running.
+    private var gaveUp: String? {
+        guard flow.step != .connect, case .failed(let message) = flow.link.state else { return nil }
+        return message
+    }
 }
 
-/// The steps by number and title, the current one bold in the accent.
+/// The steps by number and title, the current one bold in the accent; Connect in the warning color while the link
+/// reconnects or warns, unless it is the current one.
 struct StepIndicator: View {
-    let current: Step
+    @Environment(Flow.self) private var flow
 
     var body: some View {
         HStack {
             ForEach(Step.allCases, id: \.self) { step in
+                let current = step == flow.step
+                let warned = step == .connect && (flow.reconnecting || flow.link.warning != nil)
                 Text(step.indicatorLabel)
-                    .font(step == current ? .vyn(.caption, weight: .bold) : .vyn(.caption))
-                    .foregroundStyle(step == current ? Color.vynOrange : Color.vynMuted)
+                    .font(current ? .vyn(.caption, weight: .bold) : .vyn(.caption))
+                    .foregroundStyle(current ? Color.vynOrange : warned ? Color.vynOrangeDark : Color.vynMuted)
                     .frame(maxWidth: .infinity)
             }
         }

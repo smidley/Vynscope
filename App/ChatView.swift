@@ -5,6 +5,7 @@ import SwiftUI
 /// turn, the turn in progress, Try again when the last question got no answer or the usage-limit message in its place,
 /// the ChatGPT plan caption, and the input bar.
 struct ChatView: View {
+    @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
     private static let end = "end"
 
@@ -24,6 +25,7 @@ struct ChatView: View {
                 .onChange(of: ai.conversation?.messages.count) { proxy.scrollTo(Self.end, anchor: .bottom) }
                 .onChange(of: ai.streaming) { proxy.scrollTo(Self.end, anchor: .bottom) }
                 .onChange(of: ai.activity) { proxy.scrollTo(Self.end, anchor: .bottom) }
+                .onChange(of: flow.reconnecting) { proxy.scrollTo(Self.end, anchor: .bottom) }
             }
             if ai.planLimited {
                 VStack(alignment: .leading, spacing: 6) {
@@ -222,8 +224,9 @@ struct ChatRow: Identifiable {
 }
 
 /// The turn in progress: its reads and lookups so far, then its text as it streams, or Thinking… until the first
-/// text arrives.
+/// text arrives; under it Reconnecting to the adapter… while the link comes back, which a read waits for.
 struct LiveTurn: View {
+    @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
 
     var body: some View {
@@ -231,10 +234,13 @@ struct LiveTurn: View {
             ForEach(Array(ai.activity.enumerated()), id: \.offset) { _, line in
                 ActivityLine(line: line, link: nil)
             }
-            if ai.streaming.isEmpty {
-                ProgressView("Thinking…")
-            } else {
+            if !ai.streaming.isEmpty {
                 Bubble(text: ai.streaming, owner: false)
+            }
+            if flow.reconnecting {
+                ProgressView("Reconnecting to the adapter…")
+            } else if ai.streaming.isEmpty {
+                ProgressView("Thinking…")
             }
         }
     }
