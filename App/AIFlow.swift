@@ -353,9 +353,8 @@ final class AIFlow {
             ? "Signed out here, but OpenAI did not confirm it. You can disconnect Vynscope in ChatGPT Settings." : nil
     }
 
-    /// Fetches the models the ChatGPT account lists, in the server's order: those whose `visibility` is `list`, or
-    /// every one when none has a `visibility`. The picked model becomes the first listed when it is not among them. A
-    /// failure keeps the list as it was.
+    /// Fetches the models the ChatGPT account lists, as `ModelList` reads them. The picked model becomes the first
+    /// listed when it is not among them. A failure keeps the list as it was.
     func loadOpenAIModels() async {
         let reply: HTTPReply
         do {
@@ -375,19 +374,14 @@ final class AIFlow {
             return
         }
         let body = try? JSON.parse(reply.body)
-        guard (200..<300).contains(reply.status), let entries = body?["data"]?.array else {
+        guard (200..<300).contains(reply.status), let models = body.flatMap(ModelList.parse) else {
             let failure = body?["error"], message = failure?["message"]?.string
             error = reply.status == 403 && failure?["code"]?.string == "subscription_sharing_user_not_eligible"
                 ? Self.notEligible(message ?? "")
-                : "Could not load the model list: \(message ?? "HTTP \(reply.status)")"
+                : "Could not load the model list: \(message ?? (reply.status < 300 ? "unreadable answer" : "HTTP \(reply.status)"))"
             return
         }
-        let listed = entries.contains { $0["visibility"] != nil }
-            ? entries.filter { $0["visibility"]?.string == "list" } : entries
-        openAIModels = listed.compactMap { entry in
-            guard let id = entry["slug"]?.string ?? entry["id"]?.string else { return nil }
-            return (id, entry["display_name"]?.string ?? entry["id"]?.string ?? id)
-        }
+        openAIModels = models
         if !openAIModels.contains(where: { $0.id == settings.openAIModel }) {
             settings.openAIModel = openAIModels.first?.id
             saveSettings()  // the sheet may have closed while the sign-in ran
