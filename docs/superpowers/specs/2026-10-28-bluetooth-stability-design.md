@@ -43,11 +43,15 @@ While `reconnecting`, the link asks the system to connect to the same adapter it
 
 ### Commands during a reconnect
 
-`send` on a link that is `reconnecting` waits for it to be `ready` again, bounded by the same 60-second window, instead of throwing; a caller sees a slow command, not an error. A command that was in flight when the drop happened is treated the same way: its write or its reply is abandoned, and once the link is `ready` it is sent again from the start. Only a command whose reply had not arrived is resent; one that had completed is never repeated.
+The link never resends a command by itself, because a re-powered adapter has forgotten its setup (echo off, headers, protocol) and the module it was addressing, and a raw resend would reach it in that state. Instead: `send` on a link that is `reconnecting`, and a `send` whose command was in flight when the drop happened, wait for the link to be `ready` again, bounded by the same 60-second window, and then throw a new `LinkError.reconnected`. Only a command whose reply had not arrived ends this way; one that had completed is never repeated.
 
-A re-powered adapter has forgotten its setup (echo off, headers, protocol) and the module it was addressing. The link counts its reconnects; `Diag` reads that count before every command and, when it has changed, runs its setup sequence and its module selection again before the command goes out. The resent command therefore goes to the right module with the right settings. These re-run steps are the adapter setup and the select that `Diag` already sends; nothing new goes on the wire.
+`Diag` catches `reconnected` on every operation it runs (a DID read, a fault read, a tester-present, the standard-OBD requests, the setup itself): it runs its adapter setup again, re-identifies the car (below), restores the addressing it had (the module select, or the standard-OBD mode), and then runs the whole operation again from its start, not just the line that was cut. Its callers see a slow call, not an error. These restored steps are the setup and the select `Diag` already sends; nothing new goes on the wire. An operation is restored and rerun at most three times; a fourth `reconnected` fails it with `LinkError.disconnected`, so a link that keeps dropping cannot loop forever.
 
-After the setup is redone, and before the resent command, `Diag` reads the VIN once. If it differs from the VIN the flow holds, the command fails with a message naming the problem ("A different car answered after the reconnect"), the flow forgets the car and returns to the Connect step. If it matches, the work continues and the owner sees only the "Reconnecting…" state come and go.
+Re-identifying the car: after the setup is redone, `Diag` reads the VIN. After an ignition cycle the modules may stay silent for some seconds, so a VIN read that gets no answer is tried again every 2 seconds until the 60-second window of the drop that caused it runs out; the work never continues on an unverified car. A VIN that differs from the one the flow holds fails the operation with a message naming the problem ("A different car answered after the reconnect"), and the flow forgets the car and returns to the Connect step. A VIN that matches lets the operation go on, and the owner sees only the "Reconnecting…" state come and go.
+
+### A timeout while connected
+
+CoreBluetooth reports a lost link only after its supervision timeout, which can be several seconds, while a car read waits 1.5 seconds for its prompt. So a drop usually shows up first as a command timeout on a link that still says `ready`. The link therefore treats a timeout while `ready` as a suspected drop: it sends the adapter one adapter-only identify command (`ATI`, 2 seconds). An answer means the adapter is there and the car was silent, and the command fails with `timeout` as today. No answer means the adapter is gone: the link enters `reconnecting`, and the timed-out command is handled as a command in flight, which `Diag` restores and reruns.
 
 ### Asking the owner
 
@@ -55,7 +59,7 @@ When the minute runs out, the step the owner is on shows the failure message and
 
 ### Keep-alive
 
-While `ready` and no command has been sent for 30 seconds, the link sends the adapter a bare carriage return, which the adapter answers with its prompt alone and which never leaves the adapter for the car. No answer within 2 seconds counts as a miss; two misses in a row count as a drop and start a reconnect. The keep-alive is skipped while a command is in flight and stops with the link. It keeps the adapter from sleeping and turns a silent drop into a reconnect within seconds.
+While `ready` and no command has been sent for 30 seconds, the link sends the adapter `ATI`, the identify command, which the adapter answers by itself and which never reaches the car. A bare carriage return is never used for this: on ELM-style adapters an empty line repeats the previous command, which could send a car read again. No answer within 2 seconds counts as a miss; two misses in a row count as a drop and start a reconnect. The keep-alive is skipped while a command is in flight and stops with the link. It keeps the adapter from sleeping and turns a silent drop into a reconnect within seconds.
 
 ### Bad-connection warning
 
@@ -79,8 +83,11 @@ The app declares the Bluetooth central background mode, so the system keeps deli
 
 ## Tests the design asks for
 
-- A command in flight when the link drops is sent again after the reconnect, once, after the setup and the select were redone; a command that had completed is not.
-- A VIN that differs after a reconnect fails the command with its message and the flow returns to Connect.
+- A command in flight when the link drops ends in `reconnected` once the link is back; `Diag` then redoes the setup and the select and reruns the whole operation; a command that had completed is never repeated.
+- A VIN that differs after a reconnect fails the operation with its message and the flow returns to Connect; a VIN read that gets no answer is retried every 2 seconds and the operation fails only when the window runs out.
+- A fourth `reconnected` on one operation fails it with `disconnected`.
+- A timeout while `ready` sends `ATI` once: an answer gives `timeout` as today, no answer starts a reconnect and the operation is rerun after it.
+- The keep-alive is `ATI`, never a bare carriage return.
 - No reconnect within 60 seconds fails the waiting command with `disconnected` and the link ends in `failed` with the give-up message; a reconnect at 59 seconds succeeds.
 - Two unanswered keep-alives start a reconnect; one unanswered followed by an answer does not; a command in flight suppresses the keep-alive.
 - The signal warning sets after two readings below the low threshold and clears after two above the high one, not between.
