@@ -105,9 +105,10 @@ final class Flow {
     }
 
     /// Connects to the adapter (the saved one, else the first found) and sets it up. A link that was not up, or one
-    /// whose adapter `explain` dropped, may reach another car, so the car read before is forgotten. A saved adapter
-    /// that does not connect is forgotten too, so that the next try scans instead of waiting out the timeout again.
-    /// Does nothing while the link reconnects by itself, which keeps the car.
+    /// whose adapter `explain` dropped, may reach another car, so the car read before is forgotten; one that stayed up
+    /// keeps it only when the car gives the same VIN after the setup, as in `reconnect()`, and a different car or a
+    /// failed read forgets it. A saved adapter that does not connect is forgotten too, so that the next try scans
+    /// instead of waiting out the timeout again. Does nothing while the link reconnects by itself, which keeps the car.
     func connect() async {
         guard !reconnecting else { return }
         guard !busy else { error = "Still working"; return }
@@ -130,15 +131,24 @@ final class Flow {
             self.error = message
             return
         }
+        let diag = Diag(link: link, log: log)
         do {
-            let diag = Diag(link: link, log: log)
             adapter = try await diag.setUp()
-            diag.expectedVIN = vin  // the car kept above, if any
             self.diag = diag
         } catch {
             // The adapter is in no known setup, so nothing may use it until a setup succeeds.
             adapter = nil
             self.diag = nil
+            self.error = explain(error)
+            return
+        }
+        guard let known = vin else { return }  // the car kept above, if any
+        do {
+            let read = try await VIN.read(diag: diag)
+            guard read == known else { throw DiagError.differentCar(read) }
+            diag.expectedVIN = known
+        } catch {
+            forgetCar()
             self.error = explain(error)
         }
     }
