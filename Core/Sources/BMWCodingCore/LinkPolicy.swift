@@ -122,8 +122,8 @@ public struct LinkPolicy: Equatable, Sendable {
             }
             lastSignal = reading
         case .disconnectedByOwner where phase != .idle:
+            if case .reconnecting = phase { actions = [.log("disconnected by the owner")] }  // only when it ends one
             stop()
-            actions = [.log("disconnected by the owner")]
         default:
             break
         }

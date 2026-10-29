@@ -51,6 +51,29 @@ private extension LinkPolicy {
     #expect(policy.phase == .idle)
 }
 
+@Test func aDropWhileReconnectingAsksAgainWithinTheSameWindow() {
+    var policy = LinkPolicy(after: ready() + [.dropped(t0, reason: "gone")])
+    #expect(policy.handle(.dropped(t0 + 5, reason: "again")) == [.log("adapter dropped: again"), .startReconnect])
+    #expect(policy.phase == .reconnecting(since: t0))
+    #expect(policy.handle(.tick(t0 + 60)) == [
+        .log("adapter did not come back in 60 s"),
+        .giveUp("The adapter did not come back. Reconnect when it is in range."),
+    ])
+}
+
+@Test func aGiveUpClearsTheWarningAndKeepsTheReconnectCount() {
+    var policy = LinkPolicy(after: ready() + [
+        .dropped(t0 + 10, reason: "gone"), .becameReady(t0 + 14), .dropped(t0 + 20, reason: "gone"),
+    ])
+    #expect(policy.warning == "The adapter dropped and reconnected")
+    #expect(policy.handle(.tick(t0 + 80)) == [
+        .log("adapter did not come back in 60 s"),
+        .giveUp("The adapter did not come back. Reconnect when it is in range."),
+        .warn(nil),
+    ])
+    #expect(policy.reconnects == 1)
+}
+
 @Test func anOwnerDisconnectEndsTheReconnect() {
     var policy = LinkPolicy(after: ready() + [.dropped(t0, reason: "gone")])
     #expect(policy.handle(.disconnectedByOwner(t0 + 5)) == [.log("disconnected by the owner")])
@@ -58,13 +81,22 @@ private extension LinkPolicy {
     #expect(policy.handle(.tick(t0 + 70)) == [])
 }
 
+@Test func anOwnerDisconnectWhileReadyOrConnectingGoesIdleWithoutALogAndClearsTheWarning() {
+    var fromReady = LinkPolicy(after: ready() + [.signal(-90, t0 + 1), .signal(-90, t0 + 2)])
+    #expect(fromReady.handle(.disconnectedByOwner(t0 + 3)) == [.warn(nil)])
+    #expect(fromReady.phase == .idle)
+    var fromConnecting = LinkPolicy(after: [.connectStarted(t0)])
+    #expect(fromConnecting.handle(.disconnectedByOwner(t0 + 1)) == [])
+    #expect(fromConnecting.phase == .idle)
+}
+
 @Test func anIdleLinkIsKeptAlive() {
-    var policy = LinkPolicy(after: ready() + [.commandAnswered(t0)])
-    #expect(policy.handle(.tick(t0 + 29)) == [])
-    #expect(policy.handle(.tick(t0 + 30)) == [.sendKeepAlive])
-    _ = policy.handle(.keepAliveAnswered(t0 + 31))
-    #expect(policy.handle(.tick(t0 + 60)) == [])
-    #expect(policy.handle(.tick(t0 + 61)) == [.sendKeepAlive])
+    var policy = LinkPolicy(after: ready() + [.commandAnswered(t0 + 10)])
+    #expect(policy.handle(.tick(t0 + 39)) == [])
+    #expect(policy.handle(.tick(t0 + 40)) == [.sendKeepAlive])
+    _ = policy.handle(.keepAliveAnswered(t0 + 41))
+    #expect(policy.handle(.tick(t0 + 70)) == [])
+    #expect(policy.handle(.tick(t0 + 71)) == [.sendKeepAlive])
 }
 
 @Test func noKeepAliveWhileACommandIsInFlight() {
@@ -98,6 +130,8 @@ private extension LinkPolicy {
     #expect(policy.handle(.commandTimedOut(t0 + 2)) == [.sendProbe])
     #expect(policy.handle(.probeAnswered(t0 + 3)) == [.failTimedOut])
     #expect(policy.phase == .ready)
+    #expect(policy.handle(.tick(t0 + 32)) == [])  // the answer restarted the idle clock
+    #expect(policy.handle(.tick(t0 + 33)) == [.sendKeepAlive])  // and nothing is in flight any more
 }
 
 @Test func aMissedProbeIsADrop() {

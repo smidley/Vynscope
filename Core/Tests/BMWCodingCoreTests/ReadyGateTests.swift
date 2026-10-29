@@ -3,11 +3,12 @@ import Testing
 
 @Test func openingTheGateReleasesEveryWaiter() async throws {
     let gate = ReadyGate()
-    async let first: Void = gate.wait(until: .now + .seconds(5))
-    async let second: Void = gate.wait(until: .now + .seconds(5))
+    // Tasks, not async lets: they start on the main actor ahead of the test, so both wait before `open`.
+    let first = Task { try await gate.wait(until: .now + .seconds(5)) }
+    let second = Task { try await gate.wait(until: .now + .seconds(5)) }
     await Task.yield()
     gate.open()
-    try await first; try await second  // both return
+    try await first.value; try await second.value  // both return
 }
 
 @Test func failingTheGateThrowsToEveryWaiter() async {
