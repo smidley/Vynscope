@@ -417,11 +417,17 @@ public final class BLELink: NSObject, CommandLink {
     /// For a command sent while the link reconnects, or cut by the drop: waits for the link to be back and throws
     /// `LinkError.reconnected`. Throws `LinkError.disconnected` when it does not come back. The policy's give-up,
     /// on the first tick past the minute, moves the link to `failed` before it fails the gate, so the deadline
-    /// here sits two ticks later as a backstop, and the waiting command sees the give-up's message.
+    /// here sits two ticks later as a backstop, and the waiting command sees the give-up's message. Should the
+    /// backstop come first (the app back from suspension with both overdue), it hands the policy a tick of its
+    /// own, so that the give-up still lands before the command fails.
     private func waitForReconnect() async throws -> Never {
         guard isReconnecting else { throw LinkError.disconnected }
-        do { try await gate.wait(until: dropInstant + LinkPolicy.window + .seconds(2)) }
-        catch LinkError.timeout { throw LinkError.disconnected }
+        do {
+            try await gate.wait(until: dropInstant + LinkPolicy.window + .seconds(2))
+        } catch LinkError.timeout {
+            feed(.tick(.now))
+            throw LinkError.disconnected
+        }
         throw LinkError.reconnected
     }
 
@@ -531,8 +537,12 @@ extension BLELink: @preconcurrency CBCentralManagerDelegate {
         _ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: (any Error)?
     ) {
         guard peripheral === adapter else { return }  // not ours, or one torn down
-        // No error means the app asked for it: `requestConnection` let go of a silent adapter to ask for it again.
-        if error == nil, isReconnecting { return requestConnection() }
+        // No error means the app asked for it: `requestConnection` let go of the adapter to ask for it again. A
+        // preparation still running on that connection ends first, so that the next one cannot overwrite its wait.
+        if error == nil, isReconnecting {
+            wake(nil, error: LinkError.disconnected)
+            return requestConnection()
+        }
         let reason = error?.localizedDescription ?? "no reason given"
         dropped(reason, failure: "Adapter disconnected: \(reason)")
     }
