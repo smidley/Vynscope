@@ -30,8 +30,8 @@ enum Step: Int, CaseIterable {
 @Observable @MainActor
 final class Flow {
     var step = Step.connect
-    let link = BLELink()
     let log = Log()
+    let link: BLELink
     var diag: Diag?
     var adapter: AdapterInfo?
     var vin: String?
@@ -56,6 +56,7 @@ final class Flow {
     private static let folderKey = "backupFolder"
 
     init() {
+        link = BLELink(log: log)
         let current = logFile()
         // ponytail: one older file is kept, as log-previous.txt; anything before it is gone.
         if let size = try? current.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 20_000_000 {

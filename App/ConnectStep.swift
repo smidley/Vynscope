@@ -51,6 +51,7 @@ struct ConnectStep: View {
         case .scanning: "Scanning…"
         case .connecting: "Connecting…"
         case .ready: "Connected"
+        case .reconnecting: "Reconnecting…"
         case .failed(let why): why
         }
     }
