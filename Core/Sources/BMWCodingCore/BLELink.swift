@@ -118,7 +118,9 @@ public final class BLELink: NSObject, CommandLink {
     ///
     /// The link never resends a command. One sent while the link is reconnecting, or cut by a drop before its
     /// reply arrived, waits for the link to be back and throws `LinkError.reconnected`, for the caller to restore
-    /// the adapter and send it again. Throws `LinkError.timeout` if the prompt does not arrive in time although
+    /// the adapter and send it again. The first command after a reconnect that no command waited out is refused once
+    /// with `reconnected` before it is written, because the adapter came back in its power-on defaults and only the
+    /// caller can set it up again. Throws `LinkError.timeout` if the prompt does not arrive in time although
     /// the adapter still answers, `.disconnected` if the link is not up or does not come back within the minute,
     /// and `.adapterError` if CoreBluetooth reports a failed write or notification.
     public func send(_ command: String, timeout: Duration) async throws -> [String] {
@@ -127,6 +129,10 @@ public final class BLELink: NSObject, CommandLink {
         while busy { try await Task.sleep(for: .milliseconds(20)) }
         if isReconnecting { try await waitForReconnect() }
         guard state == .ready else { throw LinkError.disconnected }
+        if policy.restorationOwed {
+            feed(.restorationTaken(.now))
+            throw LinkError.reconnected
+        }
         busy = true
         defer { busy = false }
         feed(.commandSent(.now))
@@ -414,12 +420,12 @@ public final class BLELink: NSObject, CommandLink {
         (try? await exchange("ATI", timeout: .seconds(2))) != nil
     }
 
-    /// For a command sent while the link reconnects, or cut by the drop: waits for the link to be back and throws
-    /// `LinkError.reconnected`. Throws `LinkError.disconnected` when it does not come back. The policy's give-up,
-    /// on the first tick past the minute, moves the link to `failed` before it fails the gate, so the deadline
-    /// here sits two ticks later as a backstop, and the waiting command sees the give-up's message. Should the
-    /// backstop come first (the app back from suspension with both overdue), it hands the policy a tick of its
-    /// own, so that the give-up still lands before the command fails.
+    /// For a command sent while the link reconnects, or cut by the drop: waits for the link to be back, takes the
+    /// restoration the reconnect left owed and throws `LinkError.reconnected`. Throws `LinkError.disconnected` when
+    /// it does not come back. The policy's give-up, on the first tick past the minute, moves the link to `failed`
+    /// before it fails the gate, so the deadline here sits two ticks later as a backstop, and the waiting command
+    /// sees the give-up's message. Should the backstop come first (the app back from suspension with both overdue),
+    /// it hands the policy a tick of its own, so that the give-up still lands before the command fails.
     private func waitForReconnect() async throws -> Never {
         guard isReconnecting else { throw LinkError.disconnected }
         do {
@@ -428,6 +434,7 @@ public final class BLELink: NSObject, CommandLink {
             feed(.tick(.now))
             throw LinkError.disconnected
         }
+        feed(.restorationTaken(.now))
         throw LinkError.reconnected
     }
 

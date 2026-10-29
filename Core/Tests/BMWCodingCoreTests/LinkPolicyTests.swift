@@ -41,6 +41,14 @@ private extension LinkPolicy {
     #expect(policy.handle(.commandAnswered(t0 + 20)) == [.warn(nil)])
 }
 
+@Test func aReconnectWithNobodyWaitingLeavesARestorationOwed() {
+    var policy = LinkPolicy(after: ready() + [.dropped(t0 + 10, reason: "gone"), .becameReady(t0 + 14)])
+    #expect(policy.restorationOwed)
+    #expect(policy.handle(.restorationTaken(t0 + 20)) == [])
+    #expect(!policy.restorationOwed)
+    #expect(!LinkPolicy(after: ready()).restorationOwed)  // a connect, not a reconnect
+}
+
 @Test func theWindowGivesUpAtSixtySeconds() {
     var policy = LinkPolicy(after: ready() + [.dropped(t0, reason: "gone")])
     #expect(policy.handle(.tick(t0 + 59)) == [])
@@ -175,7 +183,7 @@ private extension LinkPolicy {
     let events: [LinkPolicy.Event] = [
         .connectFailed(t0), .becameReady(t0), .dropped(t0, reason: "gone"), .commandSent(t0), .commandAnswered(t0),
         .commandTimedOut(t0), .keepAliveAnswered(t0), .keepAliveMissed(t0), .probeAnswered(t0), .probeMissed(t0),
-        .tick(t0), .signal(-90, t0), .disconnectedByOwner(t0),
+        .tick(t0), .signal(-90, t0), .disconnectedByOwner(t0), .restorationTaken(t0),
     ]
     for event in events {
         var policy = LinkPolicy()

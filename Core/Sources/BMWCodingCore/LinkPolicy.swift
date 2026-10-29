@@ -17,6 +17,7 @@ public struct LinkPolicy: Equatable, Sendable {
         case tick(Date)                  // about once a second while ready or reconnecting
         case signal(Int, Date)           // an RSSI reading in dBm
         case disconnectedByOwner(Date)
+        case restorationTaken(Date)      // a caller's command took the restoration a reconnect left owed
     }
     public enum Action: Equatable, Sendable {
         case startReconnect              // ask the system to connect to the kept adapter
@@ -34,6 +35,9 @@ public struct LinkPolicy: Equatable, Sendable {
     public private(set) var phase: Phase = .idle
     public private(set) var warning: String?
     public private(set) var reconnects = 0
+    /// True from a reconnect until a caller's command takes it: the adapter came back in its power-on defaults, so
+    /// the next command is refused once, for its caller to set the adapter up again.
+    public private(set) var restorationOwed = false
 
     /// When the adapter was last heard from or last sent a caller's command; the keep-alive counts from here.
     private var lastActivity = Date.distantPast
@@ -60,6 +64,7 @@ public struct LinkPolicy: Equatable, Sendable {
             if case .reconnecting(let since) = phase {
                 start(at: date, reconnected: true)
                 reconnects += 1
+                restorationOwed = true
                 actions = [.log("adapter reconnected after \(Int(date.timeIntervalSince(since))) s")]
             } else if phase == .connecting {
                 start(at: date, reconnected: false)
@@ -124,6 +129,8 @@ public struct LinkPolicy: Equatable, Sendable {
         case .disconnectedByOwner where phase != .idle:
             if case .reconnecting = phase { actions = [.log("disconnected by the owner")] }  // only when it ends one
             stop()
+        case .restorationTaken:
+            restorationOwed = false
         default:
             break
         }

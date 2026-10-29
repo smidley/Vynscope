@@ -556,6 +556,24 @@ private let setUpCommands: [String] = ["ATZ"] + ELM.initSequence + ["ATI", "STI"
     _ = try await diag.readDID(0x40, 0x3001)
     #expect(link.sent.filter { $0 == read3000 }.count == 1)
 }
+@Test func theFirstReadAfterAReconnectWhileIdleIsRefusedOnceAndSentAfterTheRestoration() async throws {
+    let link = FakeLink { cmd in
+        switch cmd {
+        case "40 03 22 F1 90 00 00 00": return fixtureVIN
+        case read3000: return answer3000
+        default: return ["OK"] } }
+    let diag = Diag(link: link, log: Log())
+    _ = try await diag.setUp()
+    try await diag.select(module: 0x40)
+    diag.expectedVIN = "WBY73AW04RFFAKE19"
+    _ = try await diag.readDID(0x40, 0x3000)  // answered; then the link idles, drops and reconnects
+    let next = link.sent.count
+    link.dropAfter = 1  // the next read's first command, which the link refuses before writing it
+    #expect(try await diag.readDID(0x40, 0x3000) == .positive([0x01, 0x02]))
+    let vinRead: [String] = ["ATCRA 640", "ATFCSD 40 30 00 00", "40 03 22 F1 90 00 00 00"]
+    let select: [String] = ["ATCRA 640", "ATFCSD 40 30 00 00"]
+    #expect(Array(link.sent[(next + 1)...]) == setUpCommands + vinRead + select + [read3000])
+}
 @Test func setUpItselfRerunsAfterAReconnect() async throws {
     let link = FakeLink { _ in ["OK"] }
     link.dropAfter = 1  // the reset
