@@ -7,4 +7,13 @@ public protocol CommandLink: AnyObject {
 
 public enum LinkError: Error, Equatable {
     case timeout, disconnected, adapterError(String)
+    /// The link dropped and is back; the command that was cut must be sent again by a caller that first restores
+    /// the adapter.
+    case reconnected
+}
+
+/// Why `Diag` stopped after a reconnect.
+public enum DiagError: Error, Equatable {
+    /// The car that answered after the reconnect is not the one the flow holds; the value is the VIN it gave.
+    case differentCar(String)
 }

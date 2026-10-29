@@ -187,6 +187,7 @@ public final class Mechanic {
             case .adapterError(let line): line
             case .timeout: "timeout"
             case .disconnected: "disconnected"
+            case .reconnected: "reconnected"
             }
         }
         return HealthCheck(

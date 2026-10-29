@@ -349,6 +349,8 @@ final class Flow {
         case LinkError.adapterError(let text): text
         case LinkError.timeout: "The adapter did not answer in time"
         case LinkError.disconnected: "The adapter is not connected"
+        case LinkError.reconnected: "The adapter reconnected; try again"
+        case DiagError.differentCar: "A different car answered after the reconnect"
         case VINError.noVIN: "No module answered with a VIN. Is the ignition on?"
         default: error.localizedDescription
         }
