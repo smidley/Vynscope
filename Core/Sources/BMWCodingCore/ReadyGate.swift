@@ -1,5 +1,6 @@
 /// What a command cut by a drop waits behind until the link is back. `open` lets every waiter through, `fail`
-/// throws to every waiter, and a waiter whose deadline comes first gets `LinkError.timeout`.
+/// throws to every waiter, a waiter whose deadline comes first gets `LinkError.timeout`, and one whose task is
+/// cancelled gets `CancellationError`.
 public final class ReadyGate {
     private var isOpen = false  // not `open`, which would clash with `open()`
     /// The suspended waiters, keyed so that each one's timer can find its own.
@@ -8,7 +9,7 @@ public final class ReadyGate {
 
     public init() {}
 
-    /// Returns at once when the gate is open; otherwise suspends until `open`, `fail` or `deadline`.
+    /// Returns at once when the gate is open; otherwise suspends until `open`, `fail`, `deadline` or a cancel.
     public func wait(until deadline: ContinuousClock.Instant) async throws {
         guard !isOpen else { return }
         let id = nextWaiter
@@ -18,9 +19,12 @@ public final class ReadyGate {
             if !Task.isCancelled { waiters.removeValue(forKey: id)?.resume(throwing: LinkError.timeout) }
         }
         defer { timer.cancel() }  // a timer that outlived its wait must not fire later
-        // ponytail: a cancelled caller still waits for `open`, `fail` or the deadline, as in `BLELink.wait`. Add a
-        // cancellation handler if one must not sit out the window.
-        try await withCheckedThrowingContinuation { waiters[id] = $0 }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { waiters[id] = $0 }
+        } onCancel: {
+            // Any thread may cancel; the waiter is resumed on the main actor, if it is still waiting.
+            Task { @MainActor in self.waiters.removeValue(forKey: id)?.resume(throwing: CancellationError()) }
+        }
     }
 
     /// Opens the gate and lets every waiter through.

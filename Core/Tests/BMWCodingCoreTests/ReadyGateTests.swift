@@ -29,3 +29,14 @@ import Testing
     gate.open()
     try await gate.wait(until: .now)  // returns at once
 }
+
+@Test func cancellingTheWaitingTaskEndsTheWait() async {
+    let gate = ReadyGate()
+    let waited = Task { try await gate.wait(until: .now + .seconds(5)) }
+    await Task.yield()
+    let cancelled = ContinuousClock.now
+    waited.cancel()
+    await #expect(throws: CancellationError.self) { try await waited.value }
+    #expect(ContinuousClock.now - cancelled < .seconds(1))  // not at the deadline
+    gate.open()  // resumes nobody: a second resume of the cancelled waiter would trap
+}
