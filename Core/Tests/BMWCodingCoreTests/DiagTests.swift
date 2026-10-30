@@ -368,3 +368,216 @@ func answersTooShortToReadAreNoResponseWithANote(answer: String) async throws {
     let link = FakeLink { cmd in cmd == "01 00" ? ["7E8 00"] : ["OK"] }
     #expect(try await Diag(link: link, log: Log()).obd([0x01, 0x00]) == [0x7E8: []])
 }
+
+// A reconnect: the adapter restored and the cut operation run again.
+
+/// The placeholder car's answer from module 40 to a read of F190, all four frames at once.
+private let fixtureVIN = ["640 F1 10 14 62 F1 90 57 42", "640 F1 21 59 37 33 41 57 30",
+                          "640 F1 22 34 52 46 46 41 4B", "640 F1 23 45 31 39 00 00 00"]
+/// The operation the tests below cut, a read of 3000 from module 40, and its answer `01 02`.
+private let read3000 = "40 03 22 30 00 00 00 00"
+private let answer3000 = ["640 F1 05 62 30 00 01 02 00"]
+/// The same read from module 10, which answers on 610: not the module the VIN read leaves selected.
+private let read10 = "10 03 22 30 00 00 00 00"
+private let answer10 = ["610 F1 05 62 30 00 01 02 00"]
+/// What a restoration's setup sends: the reset, the init sequence and the three identity commands.
+private let setUpCommands: [String] = ["ATZ"] + ELM.initSequence + ["ATI", "STI", "STDI"]
+
+@Test func aCutReadIsRerunAfterTheSetupTheVINAndTheSelectAreRestored() async throws {
+    let link = FakeLink { cmd in
+        switch cmd {
+        case "ATZ", "ATI": return ["ELM327 v1.4b"]
+        case "STI": return ["STN2255 v5.6.2"]
+        case "STDI": return ["OBDLink CX r1.0"]
+        case "40 03 22 F1 90 00 00 00": return fixtureVIN
+        case read3000: return answer3000
+        default: return ["OK"] } }
+    let diag = Diag(link: link, log: Log())
+    _ = try await diag.setUp()
+    try await diag.select(module: 0x40)
+    diag.expectedVIN = "WBY73AW04RFFAKE19"
+    let cut = link.sent.count
+    link.dropAfter = 1  // the read's request
+    #expect(try await diag.readDID(0x40, 0x3000) == .positive([0x01, 0x02]))
+    let vinRead: [String] = ["ATCRA 640", "ATFCSD 40 30 00 00", "40 03 22 F1 90 00 00 00"]
+    let select: [String] = ["ATCRA 640", "ATFCSD 40 30 00 00"]
+    #expect(Array(link.sent[(cut + 1)...]) == setUpCommands + vinRead + select + [read3000])
+    #expect(link.sent.filter { $0 == read3000 }.count == 2)
+}
+@Test func aCutOBDRequestIsRerunInOBDAddressing() async throws {
+    let link = FakeLink { cmd in cmd == "01 00" ? ["7E8 06 41 00 BE 3E B8 11"] : ["OK"] }
+    let diag = Diag(link: link, log: Log())
+    _ = try await diag.setUp()
+    let start = link.sent.count
+    link.dropAfter = ELM.obdSequence.count + 1  // the request, after the switch
+    _ = try await diag.obd([0x01, 0x00])
+    let request: [String] = ELM.obdSequence + ["01 00"]
+    #expect(Array(link.sent[start...]) == request + setUpCommands + request)  // the switch again, not a select
+    #expect(diag.addressing == .obd)
+}
+@Test func aDifferentCarAfterTheReconnectFailsTheOperation() async throws {
+    let link = FakeLink { cmd in
+        switch cmd {
+        case "10 03 22 F1 90 00 00 00":  // another car's VIN, from module 10; module 40 is silent
+            return ["610 F1 10 14 62 F1 90 35 55", "610 F1 21 58 57 58 37 43 35", "610 F1 22 58 46 30 4B 30 30",
+                    "610 F1 23 30 30 30 00 00 00"]
+        case read3000: return answer3000
+        default: return cmd.hasPrefix("AT") || cmd.hasPrefix("ST") ? ["OK"] : ["NO DATA"] } }
+    let diag = Diag(link: link, log: Log())
+    _ = try await diag.setUp()
+    try await diag.select(module: 0x40)
+    diag.expectedVIN = "WBY73AW04RFFAKE19"
+    link.dropAfter = 1  // the read's request
+    await #expect(throws: DiagError.differentCar("5UXWX7C5XF0K00000")) { try await diag.readDID(0x40, 0x3000) }
+    #expect(link.sent.filter { $0 == read3000 }.count == 1)  // the cut one only: no rerun
+}
+@Test func aSilentCarIsAskedAgainEveryTwoSecondsUntilThirtyTimes() async throws {
+    var silentReads = 29, vinReads = 0
+    var slept: [Duration] = []
+    let link = FakeLink { cmd in
+        switch cmd {
+        case "40 03 22 F1 90 00 00 00":  // the first candidate, asked once per VIN read
+            vinReads += 1
+            return vinReads <= silentReads ? ["NO DATA"] : fixtureVIN
+        case read3000: return answer3000
+        default: return cmd.hasPrefix("AT") || cmd.hasPrefix("ST") ? ["OK"] : ["NO DATA"] } }
+    let diag = Diag(link: link, log: Log())
+    diag.sleep = { slept.append($0) }
+    try await diag.select(module: 0x40)
+    diag.expectedVIN = "WBY73AW04RFFAKE19"
+    link.dropAfter = 1  // the read's request
+    #expect(try await diag.readDID(0x40, 0x3000) == .positive([0x01, 0x02]))
+    #expect(slept == Array(repeating: .seconds(2), count: 29))
+
+    (silentReads, vinReads, slept) = (30, 0, [])
+    link.dropAfter = 1
+    await #expect(throws: DiagError.carSilent) { try await diag.readDID(0x40, 0x3000) }
+    #expect(slept == Array(repeating: .seconds(2), count: 30))
+}
+@Test func aFourthReconnectFailsWithKeptDropping() async throws {
+    let link = FakeLink { cmd in
+        if cmd == read3000 { throw LinkError.reconnected }  // cut every time: the first run and every rerun
+        return ["OK"] }
+    let diag = Diag(link: link, log: Log())
+    _ = try await diag.setUp()
+    try await diag.select(module: 0x40)
+    await #expect(throws: DiagError.keptDropping) { try await diag.readDID(0x40, 0x3000) }
+    #expect(link.sent.filter { $0 == read3000 }.count == 4)
+    #expect(link.sent.filter { $0 == "ATZ" }.count == 1 + 3)  // the first setup's, then three restorations
+}
+@Test func aBusErrorWhileTheCarWakesIsAskedAgainLikeSilence() async throws {
+    var vinReads = 0
+    var slept: [Duration] = []
+    let link = FakeLink { cmd in
+        switch cmd {
+        case "40 03 22 F1 90 00 00 00":
+            vinReads += 1
+            return vinReads <= 2 ? ["CAN ERROR"] : fixtureVIN
+        case read3000: return answer3000
+        default: return ["OK"] } }
+    let diag = Diag(link: link, log: Log())
+    diag.sleep = { slept.append($0) }
+    try await diag.select(module: 0x40)
+    diag.expectedVIN = "WBY73AW04RFFAKE19"
+    link.dropAfter = 1  // the read's request
+    #expect(try await diag.readDID(0x40, 0x3000) == .positive([0x01, 0x02]))
+    #expect(slept == [.seconds(2), .seconds(2)])
+}
+@Test func aDropDuringTheRestorationCountsAndDoesNotRecurse() async throws {
+    // The read of 3000 is cut; then the link drops again during the restorations: at the first one's reset, and at
+    // the VIN read of the `vinCuts` after it, which goes through the operations a restoration must not nest in.
+    func cutRead(vinCuts: Int) async throws -> (Diag, FakeLink) {
+        var resets = 0, vinReads = 0
+        let link = FakeLink { cmd in
+            switch cmd {
+            case "ATZ":
+                resets += 1
+                if resets == 2 { throw LinkError.reconnected }  // the first restoration's reset
+            case "40 03 22 F1 90 00 00 00":
+                vinReads += 1
+                if vinReads <= vinCuts { throw LinkError.reconnected }
+                return fixtureVIN
+            case read10: return answer10
+            default: break
+            }
+            return ["OK"] }
+        let diag = Diag(link: link, log: Log())
+        _ = try await diag.setUp()
+        try await diag.select(module: 0x10)
+        diag.expectedVIN = "WBY73AW04RFFAKE19"
+        link.dropAfter = 1  // the read's request
+        return (diag, link)
+    }
+    let (diag, link) = try await cutRead(vinCuts: 0)
+    #expect(try await diag.readDID(0x10, 0x3000) == .positive([0x01, 0x02]))
+    #expect(link.sent.filter { $0 == "ATZ" }.count == 3)  // the setup, the cut restoration, the second one
+    // the second restoration puts back module 10, which the operation began with, after the VIN read moved to 40
+    #expect(Array(link.sent.suffix(3)) == ["ATCRA 610", "ATFCSD 10 30 00 00", read10])
+    let (capped, cappedLink) = try await cutRead(vinCuts: 2)
+    await #expect(throws: DiagError.keptDropping) { try await capped.readDID(0x10, 0x3000) }
+    #expect(cappedLink.sent.filter { $0 == "ATZ" }.count == 1 + 3)
+}
+@Test func anUnfinishedRestorationChecksTheCarBeforeTheNextOperation() async throws {
+    var vinTimesOut = true
+    let link = FakeLink { cmd in
+        switch cmd {
+        case "40 03 22 F1 90 00 00 00":
+            if vinTimesOut { throw LinkError.timeout }
+            return fixtureVIN
+        case read3000: return answer3000
+        default: return ["OK"] } }
+    let diag = Diag(link: link, log: Log())
+    _ = try await diag.setUp()
+    try await diag.select(module: 0x40)
+    diag.expectedVIN = "WBY73AW04RFFAKE19"
+    link.dropAfter = 1  // the read's request
+    await #expect(throws: LinkError.timeout) { try await diag.readDID(0x40, 0x3000) }  // the restoration's VIN read
+    vinTimesOut = false
+    let next = link.sent.count
+    #expect(try await diag.readDID(0x40, 0x3000) == .positive([0x01, 0x02]))
+    let vinRead: [String] = ["ATCRA 640", "ATFCSD 40 30 00 00", "40 03 22 F1 90 00 00 00"]
+    let select: [String] = ["ATCRA 640", "ATFCSD 40 30 00 00"]
+    #expect(Array(link.sent[next...]) == setUpCommands + vinRead + select + [read3000])  // the car checked first
+    let after = link.sent.count
+    _ = try await diag.readDID(0x40, 0x3000)
+    #expect(Array(link.sent[after...]) == [read3000])  // checked: the next read goes out alone
+}
+@Test func aCompletedCommandIsNeverRepeated() async throws {
+    let link = FakeLink { cmd in
+        switch cmd {
+        case read3000: return answer3000
+        case "40 03 22 30 01 00 00 00": return ["640 F1 04 62 30 01 AA 00 00"]
+        default: return ["OK"] } }
+    let diag = Diag(link: link, log: Log())
+    _ = try await diag.setUp()
+    try await diag.select(module: 0x40)
+    #expect(try await diag.readDID(0x40, 0x3000) == .positive([0x01, 0x02]))  // its reply arrived
+    link.dropAfter = 1  // the next operation's request
+    _ = try await diag.readDID(0x40, 0x3001)
+    #expect(link.sent.filter { $0 == read3000 }.count == 1)
+}
+@Test func theFirstReadAfterAReconnectWhileIdleIsRefusedOnceAndSentAfterTheRestoration() async throws {
+    let link = FakeLink { cmd in
+        switch cmd {
+        case "40 03 22 F1 90 00 00 00": return fixtureVIN
+        case read3000: return answer3000
+        default: return ["OK"] } }
+    let diag = Diag(link: link, log: Log())
+    _ = try await diag.setUp()
+    try await diag.select(module: 0x40)
+    diag.expectedVIN = "WBY73AW04RFFAKE19"
+    _ = try await diag.readDID(0x40, 0x3000)  // answered; then the link idles, drops and reconnects
+    let next = link.sent.count
+    link.dropAfter = 1  // the next read's first command, which the link refuses before writing it
+    #expect(try await diag.readDID(0x40, 0x3000) == .positive([0x01, 0x02]))
+    let vinRead: [String] = ["ATCRA 640", "ATFCSD 40 30 00 00", "40 03 22 F1 90 00 00 00"]
+    let select: [String] = ["ATCRA 640", "ATFCSD 40 30 00 00"]
+    #expect(Array(link.sent[(next + 1)...]) == setUpCommands + vinRead + select + [read3000])
+}
+@Test func setUpItselfRerunsAfterAReconnect() async throws {
+    let link = FakeLink { _ in ["OK"] }
+    link.dropAfter = 1  // the reset
+    _ = try await Diag(link: link, log: Log()).setUp()
+    #expect(link.sent.filter { $0 == "ATZ" }.count == 2)
+    #expect(!link.sent.contains { $0.contains("22 F1 90") })  // no VIN read: no car is expected
+}

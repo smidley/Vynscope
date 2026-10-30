@@ -151,9 +151,9 @@ public final class Mechanic {
     }
 
     /// Runs one tool call. An input that does not pass the checks, an unknown tool, a module that refuses or does
-    /// not answer, and a read over the cap all answer with `isError`; only what `Diag` throws (`LinkError`, a
-    /// cancel) is thrown. A call that comes after a cancel throws `CancellationError` before anything is checked,
-    /// logged or sent, so Stop also holds between the calls of one round.
+    /// not answer, and a read over the cap all answer with `isError`; only what `Diag` throws (`LinkError`,
+    /// `DiagError`, a cancel) is thrown. A call that comes after a cancel throws `CancellationError` before anything
+    /// is checked, logged or sent, so Stop also holds between the calls of one round.
     public func run(_ call: ToolCall) async throws -> ToolResult {
         try Task.checkCancellation()
         log.note("ai: tool \(call.name) \(String(decoding: call.input.encoded(), as: UTF8.self))")
@@ -170,8 +170,10 @@ public final class Mechanic {
 
     /// The health check a conversation starts from: every module's fault codes, in order, then standard OBD-II,
     /// with `progress` told each step. A module that refuses or does not answer is recorded and the check goes on;
-    /// a `LinkError` during the module reads, or a cancel anywhere, ends it and is thrown. A `LinkError` during the
-    /// standard requests ends only them: the check keeps the modules and says why in `obdError`.
+    /// a `LinkError` during the module reads, a `DiagError` at any step (another car, a silent car, a link that kept
+    /// dropping), a link that gave up (`LinkError.disconnected`) at any step, or a cancel anywhere, ends it and is
+    /// thrown. An adapter error or a timeout during the standard requests ends only them: the check keeps the
+    /// modules and says why in `obdError`.
     public func healthCheck(progress: (String) -> Void) async throws -> HealthCheck {
         var modules: [HealthCheck.ModuleHealth] = []
         for module in car.modules {
@@ -186,7 +188,7 @@ public final class Mechanic {
             obdError = switch error {
             case .adapterError(let line): line
             case .timeout: "timeout"
-            case .disconnected: "disconnected"
+            case .disconnected, .reconnected: throw error  // the link gave up; `Diag` restores after a reconnect
             }
         }
         return HealthCheck(

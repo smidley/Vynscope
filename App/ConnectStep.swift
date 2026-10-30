@@ -11,6 +11,17 @@ struct ConnectStep: View {
                     Text(stateText)
                         .foregroundStyle(flow.link.state == .ready ? Color.vynGreen : Color.vynMuted)
                 }
+                if let warning = flow.link.warning {
+                    Text(warning)
+                        .font(.vyn(.footnote))
+                        .foregroundStyle(Color.vynOrangeDark)
+                }
+                // The drop's own warning clears with the next answer, so the count is what stays.
+                if flow.link.reconnects > 0 {
+                    Text("Reconnected ^[\(flow.link.reconnects) time](inflect: true) this session")
+                        .font(.vyn(.footnote))
+                        .foregroundStyle(Color.vynMuted)
+                }
                 if let adapter = flow.adapter {
                     LabeledContent("Model", value: flow.link.deviceModel ?? "not reported")
                     LabeledContent("Firmware", value: flow.link.deviceFirmware ?? "not reported")
@@ -21,7 +32,7 @@ struct ConnectStep: View {
             }
             Section {
                 Button("Connect") { Task { await flow.connect() } }
-                    .disabled(flow.busy)
+                    .disabled(flow.busy || flow.reconnecting)
                 Button("Disconnect") { flow.disconnect() }
                     .disabled(flow.link.state == .off)
                 Button("Forget adapter") { UserDefaults.standard.removeObject(forKey: Flow.adapterKey) }
@@ -39,7 +50,9 @@ struct ConnectStep: View {
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
         .task {
-            if flow.adapter == nil, UserDefaults.standard.string(forKey: Flow.adapterKey) != nil {
+            // At launch only: after a give-up or a Reconnect that failed, connecting again is the owner's to ask for.
+            if flow.link.state == .off, flow.adapter == nil,
+               UserDefaults.standard.string(forKey: Flow.adapterKey) != nil {
                 await flow.connect()
             }
         }
@@ -51,6 +64,7 @@ struct ConnectStep: View {
         case .scanning: "Scanning…"
         case .connecting: "Connecting…"
         case .ready: "Connected"
+        case .reconnecting: "Reconnecting…"
         case .failed(let why): why
         }
     }

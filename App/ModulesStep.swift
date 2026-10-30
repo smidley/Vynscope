@@ -7,7 +7,10 @@ struct ModulesStep: View {
 
     var body: some View {
         List {
-            if flow.discovering {
+            if flow.discovering, flow.reconnecting {
+                Text("Reconnecting to the adapter…")
+                    .foregroundStyle(Color.vynMuted)
+            } else if flow.discovering {
                 Text("Scanning · \(flow.modules.count) answered so far")
                     .foregroundStyle(Color.vynMuted)
             } else if flow.modules.isEmpty {

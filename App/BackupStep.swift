@@ -52,7 +52,11 @@ struct BackupStep: View {
             if running, let progress = flow.progress {
                 Section {
                     ProgressView(value: overall(progress)) {
-                        Text("Module \(progress.moduleIndex + 1) of \(progress.moduleCount)")
+                        if flow.reconnecting {
+                            Text("Reconnecting to the adapter…")
+                        } else {
+                            Text("Module \(progress.moduleIndex + 1) of \(progress.moduleCount)")
+                        }
                     } currentValueLabel: {
                         Text("\(progress.didsDone) of \(progress.didsTotal) identifiers")
                     }

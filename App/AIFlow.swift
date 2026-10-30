@@ -444,7 +444,7 @@ final class AIFlow {
             } catch {
                 self.conversation = nil
                 phase = .idle
-                self.error = error is CancellationError ? "Stopped" : Flow.describe(error)
+                self.error = error is CancellationError ? "Stopped" : flow.explain(error)
             }
         }
         if opened { await runTurn(effort: "high") }
@@ -580,7 +580,7 @@ final class AIFlow {
                     chatGPT = session.account  // kept, as the settings show it, without plan usage
                     text = "Vynscope may not use your ChatGPT plan; sign in again and allow plan usage"
                 default:
-                    text = Flow.describe(error)
+                    text = flow.explain(error)
                 }
                 self.error = text
                 conversation.turns.append(TurnRecord(

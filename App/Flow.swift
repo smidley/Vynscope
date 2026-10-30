@@ -30,8 +30,8 @@ enum Step: Int, CaseIterable {
 @Observable @MainActor
 final class Flow {
     var step = Step.connect
-    let link = BLELink()
     let log = Log()
+    let link: BLELink
     var diag: Diag?
     var adapter: AdapterInfo?
     var vin: String?
@@ -56,6 +56,7 @@ final class Flow {
     private static let folderKey = "backupFolder"
 
     init() {
+        link = BLELink(log: log)
         let current = logFile()
         // ponytail: one older file is kept, as log-previous.txt; anything before it is gone.
         if let size = try? current.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 20_000_000 {
@@ -71,9 +72,11 @@ final class Flow {
         log.note("session started \(Date.now.formatted(.iso8601))")
     }
 
-    /// Whether Next (Done on the last step) may be pressed.
+    /// Whether Next (Done on the last step) may be pressed. Only with the adapter set up, Done aside: once an action
+    /// dropped it (`explain`), Reconnect comes first, so that the AI step, which opens the car's conversation on
+    /// entering only with a `Diag`, is never entered without one.
     var canGoNext: Bool {
-        guard !busy else { return false }
+        guard !busy, diag != nil || step == .ai else { return false }
         return switch step {
         case .connect: adapter != nil
         case .car: vin != nil
@@ -81,6 +84,11 @@ final class Flow {
         case .backup: vin != nil
         case .ai: true
         }
+    }
+
+    /// Whether the link is coming back by itself after a drop; a step waiting on the adapter says so.
+    var reconnecting: Bool {
+        if case .reconnecting = link.state { true } else { false }
     }
 
     /// The next step; Done on the last one starts over at Connect.
@@ -96,15 +104,18 @@ final class Flow {
         step = Step(rawValue: step.rawValue - 1) ?? .connect
     }
 
-    /// Connects to the adapter (the saved one, else the first found) and sets it up. A link that was not up may
-    /// reach another car, so the car read before is forgotten. A saved adapter that does not connect is forgotten
-    /// too, so that the next try scans instead of waiting out the timeout again.
+    /// Connects to the adapter (the saved one, else the first found) and sets it up. A link that was not up, or one
+    /// whose adapter `explain` dropped, may reach another car, so the car read before is forgotten; one that stayed up
+    /// keeps it only when the car gives the same VIN after the setup, as in `reconnect()`, and a different car or a
+    /// failed read forgets it. A saved adapter that does not connect is forgotten too, so that the next try scans
+    /// instead of waiting out the timeout again. Does nothing while the link reconnects by itself, which keeps the car.
     func connect() async {
+        guard !reconnecting else { return }
         guard !busy else { error = "Still working"; return }
         busy = true
         defer { busy = false }
         error = nil
-        if link.state != .ready {
+        if link.state != .ready || diag == nil {
             adapter = nil
             diag = nil
             forgetCar()
@@ -112,7 +123,7 @@ final class Flow {
         do {
             try await link.connect()
         } catch {
-            var message = Self.describe(error)
+            var message = explain(error)
             if UserDefaults.standard.string(forKey: Self.adapterKey) != nil {
                 UserDefaults.standard.removeObject(forKey: Self.adapterKey)
                 message += "\nForgot the saved adapter; Connect scans for one next time."
@@ -120,15 +131,53 @@ final class Flow {
             self.error = message
             return
         }
+        let diag = Diag(link: link, log: log)
         do {
-            let diag = Diag(link: link, log: log)
             adapter = try await diag.setUp()
             self.diag = diag
         } catch {
             // The adapter is in no known setup, so nothing may use it until a setup succeeds.
             adapter = nil
             self.diag = nil
-            self.error = Self.describe(error)
+            self.error = explain(error)
+            return
+        }
+        guard let known = vin else { return }  // the car kept above, if any
+        do {
+            let read = try await VIN.read(diag: diag)
+            guard read == known else { throw DiagError.differentCar(read) }
+            diag.expectedVIN = known
+        } catch {
+            forgetCar()
+            self.error = explain(error)
+        }
+    }
+
+    /// After a give-up: connects to the adapter again and, when the same car answers, leaves the owner where they are
+    /// with the car still known; a different car, or none, forgets it and goes back to Connect.
+    func reconnect() async {
+        guard !reconnecting else { return }  // as in `connect()`
+        guard !busy else { error = "Still working"; return }
+        busy = true
+        defer { busy = false }
+        error = nil
+        // Nothing may use the adapter until a setup succeeds; meanwhile Reconnect stays in view, disabled.
+        adapter = nil
+        diag = nil
+        do {
+            try await link.connect()  // returns at once when the link is up and only the adapter's setup was lost
+            let diag = Diag(link: link, log: log)
+            adapter = try await diag.setUp()
+            self.diag = diag
+            if let known = vin {  // nil on the Car step before its read, with no car to check
+                let read = try await VIN.read(diag: diag)
+                guard read == known else { throw DiagError.differentCar(read) }
+                diag.expectedVIN = known
+            }
+        } catch {
+            forgetCar()
+            step = .connect
+            self.error = explain(error)
         }
     }
 
@@ -146,6 +195,7 @@ final class Flow {
     /// Forgets the car read through the adapter and everything found on it, so that nothing of one car is backed
     /// up under another's VIN.
     private func forgetCar() {
+        diag?.expectedVIN = nil
         vin = nil
         car = nil
         otherCars = []
@@ -167,12 +217,13 @@ final class Flow {
             let vin = try await VIN.read(diag: diag)
             if vin != self.vin { forgetCar() }
             self.vin = vin
+            diag.expectedVIN = vin
             let book = CarBook.load(from: file("cars.json"))
             car = book.car(for: vin)
             otherCars = book.cars.filter { $0.vin != vin }
         } catch {
             forgetCar()
-            self.error = Self.describe(error)
+            self.error = explain(error)
         }
     }
 
@@ -223,7 +274,7 @@ final class Flow {
                 }
             } catch {
                 modules = []
-                self.error = Self.describe(error)
+                self.error = explain(error)
             }
         }
         discoveryTask = task
@@ -268,7 +319,7 @@ final class Flow {
                 progress = nil  // the module being read was stopped, not failed
                 error = "Cancelled"
             } catch {
-                self.error = Self.describe(error)
+                self.error = explain(error)
             }
         }
     }
@@ -315,7 +366,7 @@ final class Flow {
                 }
             }
         } catch {
-            self.error = Self.describe(error)
+            self.error = explain(error)
         }
     }
     #endif
@@ -343,12 +394,38 @@ final class Flow {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
     }
 
+    /// What to show for `error`, which ended an action: after a give-up the link's own message, which asks for
+    /// Reconnect, otherwise `describe`'s. The flow follows suit and says why in `error` too, so that the AI step, which
+    /// hides its own error line without a `Diag`, shows it as well. An adapter the link gave up on, that kept dropping,
+    /// or whose car stayed silent after a drop is dropped with its `Diag` until Reconnect sets it up and checks the car
+    /// again; the car is kept. A different car is forgotten and the owner goes back to Connect.
+    func explain(_ error: any Error) -> String {
+        var text = Self.describe(error)
+        if case LinkError.disconnected = error, case .failed(let message) = link.state { text = message }
+        switch error {
+        case LinkError.disconnected, DiagError.keptDropping, DiagError.carSilent:
+            adapter = nil
+            diag = nil
+        case DiagError.differentCar:
+            forgetCar()
+            step = .connect
+        default:
+            return text
+        }
+        self.error = text
+        return text
+    }
+
     /// What to show for an error from the adapter or the car.
     static func describe(_ error: any Error) -> String {
         switch error {
         case LinkError.adapterError(let text): text
         case LinkError.timeout: "The adapter did not answer in time"
         case LinkError.disconnected: "The adapter is not connected"
+        case LinkError.reconnected: "The adapter reconnected; try again"
+        case DiagError.differentCar: "A different car answered after the reconnect"
+        case DiagError.carSilent: "The car did not answer after the adapter reconnected. Is the ignition on?"
+        case DiagError.keptDropping: "The adapter kept dropping. Reconnect when it is in range."
         case VINError.noVIN: "No module answered with a VIN. Is the ignition on?"
         default: error.localizedDescription
         }
