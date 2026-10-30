@@ -40,6 +40,8 @@ final class Flow {
     var otherCars: [CarRecord] = []
     var modules: [DiscoveredModule] = []
     var discovering = false
+    /// The module address the scan is at, 0...255; the Modules step draws it as progress.
+    var scanned = 0
     var progress: BackupProgress?
     var lastBackup: URL?
     var error: String?
@@ -249,6 +251,7 @@ final class Flow {
         discovering = true
         error = nil
         modules = []
+        scanned = 0
         let task = Task {
             defer {
                 busy = false
@@ -260,6 +263,7 @@ final class Flow {
                 // `diag` once its stream ends. Each walk runs in a task of its own, which a stop does not cancel, so
                 // a stop waits for that end and leaves no request in flight.
                 for address in UInt8.min...UInt8.max where address != 0xF1 {
+                    scanned = Int(address)
                     if Task.isCancelled {
                         modules = []
                         return

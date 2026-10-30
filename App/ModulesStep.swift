@@ -11,8 +11,12 @@ struct ModulesStep: View {
                 Text("Reconnecting to the adapter…")
                     .foregroundStyle(Color.vynMuted)
             } else if flow.discovering {
-                Text("Scanning · \(flow.modules.count) answered so far")
-                    .foregroundStyle(Color.vynMuted)
+                ProgressView(value: Double(flow.scanned), total: 255) {
+                    Text("Scanning \(String(format: "%02X", flow.scanned)) of FF · \(flow.modules.count) answered so far")
+                        .font(.vyn(.footnote))
+                        .foregroundStyle(Color.vynMuted)
+                }
+                .tint(Color.vynOrange)
             } else if flow.modules.isEmpty {
                 Button("Scan") { Task { await flow.discover() } }
             }
