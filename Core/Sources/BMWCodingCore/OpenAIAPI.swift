@@ -121,3 +121,19 @@ public struct ResponsesAssembler {
         return .object(call)
     }
 }
+
+/// The models a signed-in account may use, as `GET /v1/models` lists them: the entries under `models` (the key a
+/// ChatGPT sign-in's answer uses) or `data` (an API key's), only those whose `visibility` is `list` when any entry
+/// carries that key, in the server's order, each as the `slug` (or `id`) to send as `model` and the `display_name`
+/// to show. `nil` when the body holds neither array.
+public enum ModelList {
+    public static func parse(_ body: JSON) -> [(id: String, name: String)]? {
+        guard let entries = body["models"]?.array ?? body["data"]?.array else { return nil }
+        let listed = entries.contains { $0["visibility"] != nil }
+            ? entries.filter { $0["visibility"]?.string == "list" } : entries
+        return listed.compactMap { entry in
+            guard let id = entry["slug"]?.string ?? entry["id"]?.string else { return nil }
+            return (id, entry["display_name"]?.string ?? entry["id"]?.string ?? id)
+        }
+    }
+}

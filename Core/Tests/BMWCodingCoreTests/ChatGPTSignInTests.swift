@@ -45,6 +45,20 @@ let attempt = SignInAttempt(verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEj
     // With no account held (after a sign-out) another client id is a new registration.
     #expect(try ChatGPTSignIn.parseCallback(good, expectedState: "st4te", expectedClientID: "oaiapp_other", accountHeld: false).clientID == "oaiapp_abc")
     #expect(try ChatGPTSignIn.parseCallback(URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=st4te")!, expectedState: "st4te", expectedClientID: "oaiapp_abc").clientID == nil)
+    // The registration's own client id is never the issued one, whatever is held.
+    let registration = URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=st4te&client_id=dynamic_agent_client")!
+    #expect(throws: SignInError.registrationIncomplete) { try ChatGPTSignIn.parseCallback(registration, expectedState: "st4te", expectedClientID: nil) }
+    #expect(throws: SignInError.registrationIncomplete) { try ChatGPTSignIn.parseCallback(registration, expectedState: "st4te", expectedClientID: "oaiapp_abc", accountHeld: false) }
+    #expect(throws: SignInError.registrationIncomplete) { try ChatGPTSignIn.parseCallback(registration, expectedState: "st4te", expectedClientID: "oaiapp_abc") }
+}
+
+@Test func everyCallbackErrorIsReported() {
+    let parse = { (query: String) in
+        try ChatGPTSignIn.parseCallback(URL(string: "http://127.0.0.1:1455/auth/callback?\(query)&state=st4te")!, expectedState: "st4te", expectedClientID: nil)
+    }
+    #expect(throws: SignInError.callbackError(code: "server_error", description: "Try later")) { try parse("error=server_error&error_description=Try%20later") }
+    #expect(throws: SignInError.callbackError(code: "temporarily_unavailable", description: nil)) { try parse("error=temporarily_unavailable") }
+    #expect(throws: SignInError.denied) { try parse("error=access_denied") }
 }
 
 @Test func theTokenRequestsAreFormEncodedWithoutASecret() throws {
@@ -83,6 +97,14 @@ enum signedIDToken {
         "kty": .string("RSA"), "kid": .string("k1"), "alg": .string("RS256"), "use": .string("sig"), "e": .string("AQAB"),
         "n": .string("wDvXQiNHwOeXiwFoayEVPvS1XSeSzIP4JAQufr_K_U2KMijPfAgMTfrf1drLk-IFIX8t8d4bA2XKP-1FPi92WqfntPcmwjZH9YIoUG50BULWVANC6QjVN8RANQ-_K8xJOZcruAc5vvj3ipZwNAINxqWWebV5PYFoMFWLY6DCmkkcM7vUv_BzPUeIFuSpnzs0TyNWSkhMNPlP2Ylmo8eygpnpKPTMF7nDhAxkdLRZB1q2SELbV0MNfnqL6Gs8JeQRhSWqTbBv-5BXiPXHa3UYME8k0z1mRqA0s0sWdiIde5x2n0HWVIcuGOm2yajN39I8Ma02EScz9yCSfgwkMqhnuw"),
     ])])])
+    /// `jwt`'s claims signed the same way by a second throwaway key, under kid "k2": a key OpenAI rotated in. The
+    /// private key was not kept either.
+    static let rotatedJWT = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImsyIiwidHlwIjoiSldUIn0.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImF1ZCI6Im9haWFwcF9hYmMiLCJzdWIiOiJ1c2VyXzEiLCJlbWFpbCI6InNjb3R0QGV4YW1wbGUuY29tIiwibm9uY2UiOiJuMG5jZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxODkzNDU2MDAwfQ.ApesXTTLMbnVLCBZB1_ecJACXM_FuYkeMIoXNLWueG4nlnCUkXjFZvsnXN_9fAzMH-ItcN_jlbGaHLMQP6xiDFIwxzi-ZTwb_4hylxGirX89Slt32Ud7-HRdXM-bZ2M5GSn2GQfT7e5JeAU1fjvXFA_wyxBWHX36HHewpPzZ5deas6aZ36MZ3MsTo2FeVxCdgy6tFEL-mppNdaqynGzg32PQrcQZ-sGfnBaC2fsOrl6-fDYwGmcMcMAYvvbQJ2Jp8Imaq4-3SMZALtPGnuh-TF9q86PyFjuwRd1MEFEUeSlUvPJN-zb8VtLTyRlTpckCjj9vqLzi-EKDNA2dG30KTg"
+    /// The JWK of `rotatedJWT`'s key.
+    static let rotatedKey = JSON.object([
+        "kty": .string("RSA"), "kid": .string("k2"), "alg": .string("RS256"), "use": .string("sig"), "e": .string("AQAB"),
+        "n": .string("tqyGU6Bi2DMLPc3KCQ0h7s8LZjb_93duVvTBFCA4WpTmX7XxTTSxJcZZgBZsorsLiZI4YxCflqxzGMNnLHSOHJCTDWRKKWLinruj6tOoOGa0bbpQEp0H7cKEtuGZdb0MZ5oV0DzKi-QEtSbuX6ayjVTQv28MMp69wz5LgwzHsgiGLxDynEJXtxaYcw9GF6d3SyMjSTcVxUqKox3LnHc1xrOlbm5_6_zzNHOS5fqwUTf-Mx00j4LM1xygEmqGp20HxPwr-OUmOSy45d1Hzob0B6d9H-Oamnv7vKyJJTQoPO1U5pzVpO5eKX1Ui04ZgZaTXS67TTIUIFx2bD5PCf2lkw"),
+    ])
 }
 
 @Test func theIDTokenIsCheckedAgainstTheJWKSAndTheAttempt() throws {
@@ -380,4 +402,66 @@ func heldAccount(subject: String = "sub", scopes: [String] = [ChatGPT.planScope]
     let account = try await session.complete(callback: URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=\(attempt.state)")!, attempt: fixed, redirect: redirect)
     #expect(account.subject == "user_1" && account.accessToken == "at3" && account.refreshToken == "rt3" && account.idToken == signedIDToken.jwt)
     #expect(store.account == account && store.clientID == "oaiapp_abc")
+}
+
+@Test func aSigningKeyTheKeptSetLacksIsFetchedOnceMore() async throws {
+    /// A JWKS answer holding `keys`.
+    func keysAnswer(_ keys: JSON...) -> HTTPReply {
+        reply(200, String(decoding: JSON.object(["keys": .array(keys)]).encoded(), as: UTF8.self))
+    }
+    let k1 = try #require(signedIDToken.jwks["keys"]?.array?.first)
+    let rotated = tokenJSON.replacingOccurrences(of: signedIDToken.jwt, with: signedIDToken.rotatedJWT)
+    let store = MemoryAccountStore()
+    // The last answer is spare, so that a fetch where none is due shows in the count instead of stopping the run.
+    let transport = FakeHTTPTransport([
+        reply(200, tokenJSON), keysAnswer(k1), reply(200, rotated), keysAnswer(signedIDToken.rotatedKey),
+        reply(200, tokenJSON), keysAnswer(signedIDToken.rotatedKey), reply(200, rotated),
+        keysAnswer(signedIDToken.rotatedKey),
+    ])
+    let session = session(store, transport)
+    func signIn(nonce: String = "n0nce") async throws -> ChatGPTAccount {
+        let (_, attempt) = session.begin(redirect: redirect)
+        let fixed = SignInAttempt(verifier: attempt.verifier, state: attempt.state, nonce: nonce)
+        return try await session.complete(callback: URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=\(attempt.state)&client_id=oaiapp_abc")!, attempt: fixed, redirect: redirect)
+    }
+    let keyRequests = { transport.requests.filter { $0.url == ChatGPT.jwksURL }.count }
+    #expect(try await signIn().idToken == signedIDToken.jwt && keyRequests() == 1)
+    // OpenAI rotated its keys: the token is signed with k2, which the kept set lacks, so the set is fetched once more.
+    #expect(try await signIn().idToken == signedIDToken.rotatedJWT && keyRequests() == 2)
+    // A kid that neither the kept set nor a fresh one holds fails as before, after one fetch.
+    await #expect(throws: SignInError.invalidIDToken("key")) { try await signIn() }
+    #expect(keyRequests() == 3 && store.account?.idToken == signedIDToken.rotatedJWT)
+    // Any other failure fetches nothing.
+    await #expect(throws: SignInError.invalidIDToken("nonce")) { try await signIn(nonce: "other") }
+    #expect(keyRequests() == 3 && transport.requests.count == 7)
+}
+
+@Test func keysFetchedForTheSignInItselfAreNotFetchedAgain() async throws {
+    let rotated = tokenJSON.replacingOccurrences(of: signedIDToken.jwt, with: signedIDToken.rotatedJWT)
+    // A spare answer, so that a second fetch shows in the count instead of stopping the run.
+    let transport = FakeHTTPTransport([reply(200, rotated), reply(200, jwksJSON), reply(200, jwksJSON)])
+    let session = session(MemoryAccountStore(), transport)
+    let (_, attempt) = session.begin(redirect: redirect)
+    let fixed = SignInAttempt(verifier: attempt.verifier, state: attempt.state, nonce: "n0nce")
+    // The run's first sign-in: a set fetched for it cannot be stale, so a miss on it fails at once.
+    await #expect(throws: SignInError.invalidIDToken("key")) {
+        try await session.complete(callback: URL(string: "http://127.0.0.1:1455/auth/callback?code=c&state=\(attempt.state)&client_id=oaiapp_abc")!, attempt: fixed, redirect: redirect)
+    }
+    #expect(transport.requests.count == 2)
+}
+
+@Test func anAccountWithoutARefreshTokenSignsOutWithoutARequest() async throws {
+    let store = MemoryAccountStore()
+    store.hostID = "urn:uuid:1"; store.clientID = "oaiapp_abc"
+    var account = heldAccount()
+    account.refreshToken = ""  // the exchange's answer carried none
+    store.account = account
+    // Answers for refreshes, so that one sent shows in the count instead of stopping the run.
+    let transport = FakeHTTPTransport([reply(200, renewedJSON), reply(200, renewedJSON)])
+    let expired = session(store, transport, now: Date(timeIntervalSince1970: 1_800_010_000))
+    await #expect(throws: SignInError.signedOut) { try await expired.validAccessToken() }
+    #expect(transport.requests.isEmpty && store.account == nil && store.clientID == "oaiapp_abc")
+    store.account = account
+    await #expect(throws: SignInError.signedOut) { try await expired.renew() }
+    #expect(transport.requests.isEmpty && store.account == nil)
 }

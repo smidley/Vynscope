@@ -143,21 +143,24 @@ public struct ConversationStore {
     }
 
     /// Removes the conversation of the car with this VIN with `provider`: its file, and for Anthropic's the file of
-    /// before there were providers too. Their being missing is not an error.
+    /// before there were providers too, first, so that a removal that fails cannot bring the older one back. Their
+    /// being missing is not an error.
     public func delete(vin: String, provider: Provider) throws {
         var urls = [file(vin: vin, provider: provider)]
-        if provider == .anthropic { urls.append(legacyFile(vin: vin)) }
+        if provider == .anthropic { urls.insert(legacyFile(vin: vin), at: 0) }
         for url in urls where FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
     }
 
     /// Removes every car's conversation with `provider`: the files `<vin>-<provider>.json`, and for Anthropic's the
-    /// files of before there were providers, `<vin>.json`. The other provider's files stay. The folder's being missing
-    /// is not an error.
+    /// files of before there were providers, `<vin>.json`, first, as `delete` does. The other provider's files stay.
+    /// The folder's being missing is not an error.
     public func deleteAll(provider: Provider) throws {
         guard FileManager.default.fileExists(atPath: folder.path) else { return }
+        // The folder lists its files in no fixed order: the names without a dash go first.
         for url in try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            .sorted(by: { !$0.lastPathComponent.contains("-") && $1.lastPathComponent.contains("-") })
         where url.pathExtension == "json" {
             let name = url.deletingPathExtension().lastPathComponent
             // A VIN has no dash, so a name without one is a file of before there were providers.

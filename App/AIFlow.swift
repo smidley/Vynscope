@@ -65,6 +65,16 @@ final class AIFlow {
         case answering
     }
 
+    /// Where a sign-in to ChatGPT is.
+    enum SignInPhase {
+        /// None runs.
+        case idle
+        /// The sign-in page is open and the redirect awaited, which Cancel ends.
+        case waitingForBrowser
+        /// The redirect is in: the account is stored and the model list loaded.
+        case completing
+    }
+
     private(set) var phase = Phase.idle
     private(set) var conversation: Conversation?
     /// The assistant text of the turn in progress.
@@ -76,8 +86,9 @@ final class AIFlow {
     private(set) var hasKey: Bool
     /// The ChatGPT sign-in, as kept in the Keychain.
     private(set) var chatGPT: ChatGPTAccount?
-    /// A sign-in waits for the browser or completes.
-    private(set) var signingIn = false
+    private(set) var signInPhase = SignInPhase.idle
+    /// A sign-out runs, from asking OpenAI to revoke the sign-in until it is forgotten here.
+    private(set) var signingOut = false
     /// The sign-in page, which the iPhone shows in a Safari sheet while this is set.
     var signInURL: URL?
     /// The models the ChatGPT account lists: the id the API takes, then the name shown.
@@ -95,6 +106,9 @@ final class AIFlow {
     @ObservationIgnored private var turnTask: Task<Void, Never>?
     /// The wait for the sign-in's redirect, which Cancel and the Safari sheet's dismissal end.
     @ObservationIgnored private var signInTask: Task<URL, any Error>?
+    /// The last turn on OpenAI ended in a refused token that a renewal answered: a refusal in the next one is not
+    /// renewed again, it signs out.
+    @ObservationIgnored private var refusedAfterRenewal = false
     private static let welcomeShownKey = "chatgptWelcomeShown"
     private static let responsesURL = URL(string: "https://api.openai.com/v1/responses")!
 
@@ -102,7 +116,8 @@ final class AIFlow {
         self.flow = flow
         settings = .load()
         hasKey = Keychain.apiKey() != nil
-        session = ChatGPTSession(store: KeychainAccountStore(), transport: URLSessionHTTPTransport(), log: flow.log)
+        session = ChatGPTSession(
+            store: KeychainAccountStore(log: flow.log), transport: URLSessionHTTPTransport(), log: flow.log)
         chatGPT = session.account
     }
 
@@ -233,14 +248,15 @@ final class AIFlow {
     }
 
     /// Shows the conversation of the provider just picked for the connected car or, when there is none and the
-    /// provider's credentials are in, runs the health check. Nothing while a check or a turn runs.
+    /// provider's credentials are in, runs the health check; on another step than the AI step, entering it runs the
+    /// check instead. Nothing while a check or a turn runs.
     func switchProvider() async {
         guard !flow.busy else { return }
         conversation = flow.vin.flatMap { store.load(vin: $0, provider: settings.provider) }
         phase = conversation == nil ? .idle : .ready
         planLimited = false
         error = nil
-        if conversation == nil, hasCredentials, flow.diag != nil { await healthCheck() }
+        if conversation == nil, hasCredentials, flow.diag != nil, flow.step == .ai { await healthCheck() }
     }
 
     /// Signs in with ChatGPT: starts the listener for the redirect, then opens OpenAI's sign-in page, in the default
@@ -248,15 +264,15 @@ final class AIFlow {
     /// ends. Then completes the sign-in, loads the model list and, the first time, shows the welcome. The sign-in
     /// page's URL is never logged.
     func signInToChatGPT() async {
-        guard !signingIn else { return }
-        signingIn = true
+        guard signInPhase == .idle else { return }
+        signInPhase = .waitingForBrowser
         error = nil
         let listener = LoopbackListener()
         defer {
             listener.stop()
             signInTask = nil
             signInURL = nil
-            signingIn = false
+            signInPhase = .idle
         }
         let redirect: URL
         do {
@@ -269,7 +285,10 @@ final class AIFlow {
         let wait = Task { try await listener.callback() }
         signInTask = wait
         #if os(macOS)
-        ChatGPTBrowser.open(url)
+        if !ChatGPTBrowser.open(url) {
+            error = "Could not open the browser."
+            cancelSignIn()
+        }
         #else
         signInURL = url
         #endif
@@ -278,6 +297,7 @@ final class AIFlow {
             // The redirect is in: the Safari sheet goes, and its dismissal or Cancel no longer ends anything.
             signInTask = nil
             signInURL = nil
+            signInPhase = .completing
             #if os(macOS)
             ChatGPTBrowser.returnToApp()
             #endif
@@ -289,10 +309,12 @@ final class AIFlow {
                 UserDefaults.standard.set(true, forKey: Self.welcomeShownKey)
             }
         } catch is CancellationError {
-            // Cancel, or the sheet dismissed: nothing to say.
+            // Cancel, or the sheet dismissed: nothing to say. A browser that did not open has said so already.
         } catch let failure as SignInError {
             switch failure {
             case .denied: error = "Sign-in was cancelled in the browser"
+            case .callbackError(let code, let description):
+                error = "The sign-in failed (\(code)\(description.map { ": \($0)" } ?? "")). Try again."
             case .planNotGranted: chatGPT = session.account  // kept, without plan usage, as the row then says
             case .differentAccount: error = "That is a different ChatGPT account. Sign out first."
             case .stateMismatch, .clientMismatch, .registrationIncomplete, .missingCode, .signedOut:
@@ -319,6 +341,9 @@ final class AIFlow {
     /// Revokes the ChatGPT sign-in at OpenAI and forgets it here, confirmed or not. When the session held no account
     /// (the row was stale), the registration is dropped too, and the next sign-in registers the app again.
     func signOutOfChatGPT() async {
+        signingOut = true
+        defer { signingOut = false }
+        refusedAfterRenewal = false  // a refusal belongs to the sign-in it happened in
         let held = session.account != nil
         let result = await session.signOut()
         if !held { session.dropRegistration() }
@@ -328,9 +353,8 @@ final class AIFlow {
             ? "Signed out here, but OpenAI did not confirm it. You can disconnect Vynscope in ChatGPT Settings." : nil
     }
 
-    /// Fetches the models the ChatGPT account lists, in the server's order: those whose `visibility` is `list`, or
-    /// every one when none has a `visibility`. The picked model becomes the first listed when it is not among them. A
-    /// failure keeps the list as it was.
+    /// Fetches the models the ChatGPT account lists, as `ModelList` reads them. The picked model becomes the first
+    /// listed when it is not among them. A failure keeps the list as it was.
     func loadOpenAIModels() async {
         let reply: HTTPReply
         do {
@@ -350,19 +374,14 @@ final class AIFlow {
             return
         }
         let body = try? JSON.parse(reply.body)
-        guard (200..<300).contains(reply.status), let entries = body?["data"]?.array else {
+        guard (200..<300).contains(reply.status), let models = body.flatMap(ModelList.parse) else {
             let failure = body?["error"], message = failure?["message"]?.string
             error = reply.status == 403 && failure?["code"]?.string == "subscription_sharing_user_not_eligible"
                 ? Self.notEligible(message ?? "")
-                : "Could not load the model list: \(message ?? "HTTP \(reply.status)")"
+                : "Could not load the model list: \(message ?? (reply.status < 300 ? "unreadable answer" : "HTTP \(reply.status)"))"
             return
         }
-        let listed = entries.contains { $0["visibility"] != nil }
-            ? entries.filter { $0["visibility"]?.string == "list" } : entries
-        openAIModels = listed.compactMap { entry in
-            guard let id = entry["slug"]?.string ?? entry["id"]?.string else { return nil }
-            return (id, entry["display_name"]?.string ?? entry["id"]?.string ?? id)
-        }
+        openAIModels = models
         if !openAIModels.contains(where: { $0.id == settings.openAIModel }) {
             settings.openAIModel = openAIModels.first?.id
             saveSettings()  // the sheet may have closed while the sign-in ran
@@ -435,7 +454,8 @@ final class AIFlow {
     /// Anthropic's on the API key, OpenAI's on the ChatGPT plan. Streams its text into `streaming` and its reads and
     /// lookups into `activity`, then records the turn with what its requests used and its activity. A stop, and the
     /// plan's usage limit, keep the text streamed so far; an error keeps the conversation as it was before the answer
-    /// and records the error. A token OpenAI refuses is renewed before the sign-in is given up. Either way the
+    /// and records the error. A token OpenAI refuses is renewed before the sign-in is given up, unless it was renewed
+    /// for the refusal that ended the OpenAI turn before: then the sign-in is given up at once. Either way the
     /// conversation is saved, never holds a tool call without its result, and is ready for the next message, also when
     /// the turn could not start.
     private func runTurn(effort: String) async {
@@ -465,6 +485,10 @@ final class AIFlow {
             var messages = conversation.messages
             // The turn's OpenAI client, which learns the models that refuse web search.
             var openAI: OpenAIClient?
+            // Whether the OpenAI turn before ended in a refusal that a renewal answered; this turn sets it again only
+            // with a refusal it renews, so any other end leaves it cleared.
+            let refusedBefore = provider == .openai && refusedAfterRenewal
+            if provider == .openai { refusedAfterRenewal = false }
             do {
                 let client: any ModelClient
                 switch provider {
@@ -517,8 +541,9 @@ final class AIFlow {
                     stoppedAtRoundCap: false, stopped: true, model: model, activity: activity, provider: provider))
             } catch {
                 var error = error
-                // A refused token is renewed first: a new sign-in is asked for only when renewing fails for good.
-                if case OpenAIError.unauthorized = error {
+                // A refused token is renewed first: a new sign-in is asked for only when renewing fails for good, or
+                // when the token renewed for the turn before is refused too.
+                if case OpenAIError.unauthorized = error, !refusedBefore {
                     do { _ = try await session.renew() } catch let renewal { error = renewal }
                 }
                 let text: String
@@ -537,7 +562,11 @@ final class AIFlow {
                     text = Self.notEligible(message)  // not tried again: the account, not the request, is refused
                 case OpenAIError.api(_, let code, let message, _), OpenAIError.planLimit(let code, let message, _):
                     text = "API error (\(code)): \(message)"
+                case OpenAIError.unauthorized where refusedBefore:
+                    await signOutOfChatGPT()
+                    text = "OpenAI refused the renewed token too. Sign in again in Settings."
                 case OpenAIError.unauthorized:
+                    refusedAfterRenewal = true
                     text = "OpenAI refused the request; try again"  // renewed: Try again sends the new token
                 case OpenAIError.network(let message), SignInError.network(let message):
                     text = "No connection to OpenAI: \(message)"

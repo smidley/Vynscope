@@ -56,3 +56,17 @@ private func assemble(_ stream: String) throws -> (updates: [StreamUpdate], mess
     #expect(throws: OpenAIError.planLimit(code: "subscription_sharing_usage_limit_exceeded", message: "Usage limit reached", usage: .zero)) { try assemble(limit) }
     #expect(OpenAIError.planLimitCodes == ["subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable"])
 }
+
+@Test func aSignInsModelListSitsUnderModelsAndKeepsTheListedOnesInOrder() throws {
+    let body = try JSON.parse(Data(#"{"models":[{"slug":"gpt-6.1-sol","display_name":"GPT-6.1 Sol","visibility":"list"},{"slug":"gpt-6.1-mini","display_name":"GPT-6.1 Mini","visibility":"hidden"},{"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list"}]}"#.utf8))
+    let models = try #require(ModelList.parse(body))
+    #expect(models.map(\.id) == ["gpt-6.1-sol", "gpt-5.5"])
+    #expect(models.map(\.name) == ["GPT-6.1 Sol", "GPT-5.5"])
+}
+
+@Test func anAPIKeysModelListSitsUnderDataAndABodyWithNeitherArrayIsNil() throws {
+    let keyed = try JSON.parse(Data(#"{"object":"list","data":[{"id":"gpt-6.1-sol","object":"model"}]}"#.utf8))
+    #expect(ModelList.parse(keyed)?.map(\.id) == ["gpt-6.1-sol"])
+    #expect(ModelList.parse(keyed)?.map(\.name) == ["gpt-6.1-sol"])
+    #expect(ModelList.parse(try JSON.parse(Data(#"{"object":"list"}"#.utf8))) == nil)
+}

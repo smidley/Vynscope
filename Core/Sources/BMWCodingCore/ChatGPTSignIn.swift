@@ -57,9 +57,11 @@ public struct ChatGPTAccount: Codable, Equatable, Sendable {
 public enum SignInError: Error, Equatable {
     /// The owner declined in the browser (`error=access_denied`).
     case denied
+    /// The browser came back with an `error` other than `access_denied`: it, and its `error_description` when given.
+    case callbackError(code: String, description: String?)
     case stateMismatch
     case missingCode
-    /// A first sign-in's callback carried no issued client id.
+    /// A first sign-in's callback carried no issued client id, or a callback carried the registration's own.
     case registrationIncomplete
     /// The callback named a client id other than the attempt's while an account is held.
     case clientMismatch
@@ -135,7 +137,7 @@ public enum ChatGPTSignIn {
         return components.url!
     }
 
-    /// The redirect checked as OpenAI's sign-in page orders it: the state first, then a refusal, then the code and the
+    /// The redirect checked as OpenAI's sign-in page orders it: the state first, then an error, then the code and the
     /// client id. A later sign-in's callback may leave the client id out, which keeps the expected one. Another client
     /// id is `clientMismatch` while an account is held; with none held (after a sign-out) it is a new registration.
     public static func parseCallback(
@@ -144,9 +146,13 @@ public enum ChatGPTSignIn {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         let value = { (name: String) in items.first { $0.name == name }?.value }
         guard value("state") == expectedState else { throw SignInError.stateMismatch }
-        if value("error") == "access_denied" { throw SignInError.denied }
+        if let error = value("error") {
+            if error == "access_denied" { throw SignInError.denied }
+            throw SignInError.callbackError(code: error, description: value("error_description"))
+        }
         guard let code = value("code") else { throw SignInError.missingCode }
         let clientID = value("client_id")
+        if clientID == ChatGPT.registrationClientID { throw SignInError.registrationIncomplete }
         if expectedClientID == nil, clientID == nil { throw SignInError.registrationIncomplete }
         if accountHeld, let expectedClientID, let clientID, clientID != expectedClientID {
             throw SignInError.clientMismatch
@@ -276,7 +282,7 @@ public final class ChatGPTSession {
     private let log: Log
     private let now: () -> Date
     private let sleep: (Duration) async throws -> Void
-    /// OpenAI's signing keys, fetched by the first sign-in to need them.
+    /// OpenAI's signing keys, fetched by the first sign-in to need them, and again by one whose token they lack.
     private var jwks: JSON?
     /// The refresh in flight, which every caller of `validAccessToken` and `renew` waits on, so a rotated token is used
     /// once.
@@ -336,9 +342,20 @@ public final class ChatGPTSession {
             if case SignInError.tokenEndpoint(_, "invalid_client", _) = error { store.clientID = nil }
             throw error
         }
-        let jwks = try await keys()
-        let token = try ChatGPTSignIn.validate(
-            idToken: tokens.idToken ?? "", jwks: jwks, clientID: clientID, nonce: attempt.nonce, now: now())
+        let check = { (jwks: JSON) in
+            try ChatGPTSignIn.validate(
+                idToken: tokens.idToken ?? "", jwks: jwks, clientID: clientID, nonce: attempt.nonce, now: self.now())
+        }
+        let token: IDToken
+        let cached = jwks != nil
+        do {
+            token = try await check(keys())
+        } catch SignInError.invalidIDToken("key") where cached {
+            // Keys kept from an earlier sign-in lack the token's kid, as after OpenAI rotates its keys: they are
+            // fetched again, once. A set fetched for this sign-in cannot be stale, and is not.
+            jwks = nil
+            token = try await check(keys())
+        }
         if let held, held.issuer != token.issuer || held.subject != token.subject {
             throw SignInError.differentAccount
         }
@@ -407,6 +424,11 @@ public final class ChatGPTSession {
         if let refreshing { return try await refreshing.value }
         guard let account = store.account else { throw SignInError.signedOut }
         guard renewing || account.expiresAt <= now().addingTimeInterval(60) else { return account }
+        // No refresh token (the exchange gave none): it ends as a terminal refresh error does, with no request.
+        guard !account.refreshToken.isEmpty else {
+            store.account = nil
+            throw SignInError.signedOut
+        }
         let refresh = Task { try await self.refresh(account) }
         refreshing = refresh
         defer { refreshing = nil }

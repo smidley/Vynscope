@@ -36,9 +36,11 @@ struct VynscopeApp: App {
     }
 }
 
-/// The current step under the step indicator, with Back, Log and Next in the toolbar.
+/// The current step under the step indicator, with Back, Log, Settings (the AI step has its own) and Next in the
+/// toolbar.
 struct FlowView: View {
     @Environment(Flow.self) private var flow
+    @State private var showingSettings = false
 
     var body: some View {
         @Bindable var flow = flow
@@ -72,11 +74,17 @@ struct FlowView: View {
                     }
                 }
                 ToolbarItem { LogButton() }
+                if flow.step != .ai {
+                    ToolbarItem {
+                        Button("Settings", systemImage: "gear") { showingSettings = true }
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button(flow.step == .ai ? "Done" : "Next") { flow.next() }
                         .disabled(!flow.canGoNext)
                 }
             }
+            .sheet(isPresented: $showingSettings) { AISettingsView() }
         }
         #if os(iOS)
         .sheet(isPresented: $flow.showingLog) {

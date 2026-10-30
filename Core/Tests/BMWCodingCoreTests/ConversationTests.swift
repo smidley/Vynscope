@@ -212,24 +212,91 @@ private func temporaryFolder() -> URL {
     #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) != nil)
 }
 
+/// A car's conversation as stage 1 wrote it, before there were providers: `<vin>.json`, with no `provider`.
+private let stageOneConversation = """
+    {"carContext":"{}","messages":[],"model":"claude-opus-5-5","started":"2026-10-27T10:00:00Z",\
+    "turns":[{"messageIndex":0,"model":"claude-opus-5-5","refused":false,"rounds":1,"stopped":false,\
+    "stoppedAtRoundCap":false,"truncated":false,"usage":{"cacheCreationInputTokens":0,"cacheReadInputTokens":0,\
+    "inputTokens":1,"outputTokens":1,"webFetchRequests":0,"webSearchRequests":0}}],"vin":"WBY73AW04RFFAKE19"}
+    """
+
 @Test func aStageOneConversationFileLoadsAsAnthropics() throws {
     let folder = temporaryFolder()
     defer { try? FileManager.default.removeItem(at: folder) }
     let store = ConversationStore(directory: folder)
     let conversations = folder.appendingPathComponent("Conversations")
     try FileManager.default.createDirectory(at: conversations, withIntermediateDirectories: true)
-    let old = """
-        {"carContext":"{}","messages":[],"model":"claude-opus-5-5","started":"2026-10-27T10:00:00Z",\
-        "turns":[{"messageIndex":0,"model":"claude-opus-5-5","refused":false,"rounds":1,"stopped":false,\
-        "stoppedAtRoundCap":false,"truncated":false,"usage":{"cacheCreationInputTokens":0,"cacheReadInputTokens":0,\
-        "inputTokens":1,"outputTokens":1,"webFetchRequests":0,"webSearchRequests":0}}],"vin":"WBY73AW04RFFAKE19"}
-        """
-    try Data(old.utf8).write(to: conversations.appendingPathComponent("WBY73AW04RFFAKE19.json"))
+    try Data(stageOneConversation.utf8).write(to: conversations.appendingPathComponent("WBY73AW04RFFAKE19.json"))
     let loaded = try #require(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic))
     #expect(loaded.provider == .anthropic && loaded.turns.first?.provider == .anthropic)
     try store.save(loaded)  // moves to the per-provider file
     #expect(!FileManager.default.fileExists(atPath: conversations.appendingPathComponent("WBY73AW04RFFAKE19.json").path))
     #expect(FileManager.default.fileExists(atPath: conversations.appendingPathComponent("WBY73AW04RFFAKE19-anthropic.json").path))
+}
+
+@Test func theStageOneFileIsAnthropicsAloneAndGivesWayToItsOwn() throws {
+    let folder = temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let store = ConversationStore(directory: folder)
+    let conversations = folder.appendingPathComponent("Conversations")
+    let exists = { (name: String) in FileManager.default.fileExists(atPath: conversations.appendingPathComponent(name).path) }
+    let writeStageOne = { try Data(stageOneConversation.utf8).write(to: conversations.appendingPathComponent("WBY73AW04RFFAKE19.json")) }
+    try FileManager.default.createDirectory(at: conversations, withIntermediateDirectories: true)
+    try writeStageOne()
+    #expect(store.load(vin: "WBY73AW04RFFAKE19", provider: .openai) == nil)
+    let old = try #require(store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic))
+    #expect(old.started == Date(timeIntervalSince1970: 1_793_095_200) && old.turns.count == 1)  // 2026-10-27T10:00:00Z
+    // OpenAI's conversation is saved and deleted beside it, and leaves it.
+    try store.save(Conversation(vin: "WBY73AW04RFFAKE19", started: .now, model: "gpt-6.1-sol", carContext: "{}", provider: .openai))
+    #expect(exists("WBY73AW04RFFAKE19-openai.json") && exists("WBY73AW04RFFAKE19.json"))
+    try store.delete(vin: "WBY73AW04RFFAKE19", provider: .openai)
+    #expect(!exists("WBY73AW04RFFAKE19-openai.json") && exists("WBY73AW04RFFAKE19.json"))
+    // Deleting Anthropic's removes it.
+    try store.delete(vin: "WBY73AW04RFFAKE19", provider: .anthropic)
+    #expect(!exists("WBY73AW04RFFAKE19.json") && store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) == nil)
+    // Beside Anthropic's own file it is not read.
+    let own = Conversation(vin: "WBY73AW04RFFAKE19", started: Date(timeIntervalSince1970: 1_793_000_000), model: "claude-opus-5-5", carContext: "{}")
+    try store.save(own)
+    try writeStageOne()
+    #expect(exists("WBY73AW04RFFAKE19.json") && store.load(vin: "WBY73AW04RFFAKE19", provider: .anthropic) == own)
+}
+
+@Test func deletingAnthropicsRemovesTheStageOneFileFirst() throws {
+    let folder = temporaryFolder()
+    let conversations = folder.appendingPathComponent("Conversations")
+    let own = conversations.appendingPathComponent("WBY73AW04RFFAKE19-anthropic.json")
+    defer {
+        try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: own.path)
+        try? FileManager.default.removeItem(at: folder)
+    }
+    let store = ConversationStore(directory: folder)
+    try store.save(Conversation(vin: "WBY73AW04RFFAKE19", started: Date(timeIntervalSince1970: 1_793_000_000), model: "claude-opus-5-5", carContext: "{}"))
+    try Data(stageOneConversation.utf8).write(to: conversations.appendingPathComponent("WBY73AW04RFFAKE19.json"))
+    // Anthropic's own file cannot be removed: the delete fails, with the older file gone already, so it is not read again.
+    try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: own.path)
+    #expect(throws: (any Error).self) { try store.delete(vin: "WBY73AW04RFFAKE19", provider: .anthropic) }
+    #expect(!FileManager.default.fileExists(atPath: conversations.appendingPathComponent("WBY73AW04RFFAKE19.json").path))
+}
+
+@Test func deletingAllOfAnthropicsRemovesTheStageOneFilesFirst() throws {
+    let folder = temporaryFolder()
+    let conversations = folder.appendingPathComponent("Conversations")
+    let cars = ["WBY73AW04RFFAKE19", "WBA00000000FAKE01", "WBA00000000FAKE02"]
+    let own = { (vin: String) in conversations.appendingPathComponent("\(vin)-anthropic.json").path }
+    defer {
+        for vin in cars { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: own(vin)) }
+        try? FileManager.default.removeItem(at: folder)
+    }
+    let store = ConversationStore(directory: folder)
+    for vin in cars {
+        try store.save(Conversation(vin: vin, started: Date(timeIntervalSince1970: 1_793_000_000), model: "claude-opus-5-5", carContext: "{}"))
+        try Data(stageOneConversation.utf8).write(to: conversations.appendingPathComponent("\(vin).json"))
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: own(vin))
+    }
+    // No car's own file can be removed: the delete fails, with every stage-1 file gone already, in whatever order the
+    // folder lists the files.
+    #expect(throws: (any Error).self) { try store.deleteAll(provider: .anthropic) }
+    #expect(cars.allSatisfy { !FileManager.default.fileExists(atPath: conversations.appendingPathComponent("\($0).json").path) })
 }
 
 // What the brief's tests above do not isolate: the turn's own new fields, which its custom decoder reads.
