@@ -349,3 +349,22 @@ func healthCheckStopsAtTheNextRequestAfterACancel(command: String) async throws 
     let reply = JSON.object(["role": .string("assistant"), "content": .array([.object(["type": .string("text"), "text": .string("hi")])])])
     #expect(!Mechanic.isOwnerMessage(reply, provider: .anthropic))
 }
+
+@Test func aCheckWhereNothingAnsweredSaysSo() {
+    let adapter = HealthCheck.Adapter(model: "OBDLink CX", firmware: "5.6")
+    func module(_ address: String, faults: [HealthCheck.Fault]?, faultRead: String?) -> HealthCheck.ModuleHealth {
+        .init(address: address, name: nil, description: nil, signed: false, hardware: nil, software: nil, serial: nil,
+              codingFiles: [], faults: faults, faultRead: faultRead)
+    }
+    var check = HealthCheck(vin: "WBY73AW04RFFAKE19", nickname: "i4", chassis: nil, adapter: adapter,
+                            modules: [module("40", faults: nil, faultRead: "no answer"), module("10", faults: nil, faultRead: "no answer")],
+                            obd: nil, obdError: nil, backup: nil, readAt: "2026-10-29T18:54:00Z")
+    #expect(check.nothingAnswered)
+    check.modules[0] = module("40", faults: [], faultRead: nil)  // one module answered, with no faults
+    #expect(!check.nothingAnswered)
+    check.modules[0] = module("40", faults: nil, faultRead: "refused (0x11)")  // a refusal is an answer
+    #expect(!check.nothingAnswered)
+    check.modules[0] = module("40", faults: nil, faultRead: "no answer")
+    check.obd = HealthCheck.OBDHealth(storedCodes: ["7E8": ["P0A80"]], pendingCodes: [:], supportedPIDs: [:], values: [:])
+    #expect(!check.nothingAnswered)
+}

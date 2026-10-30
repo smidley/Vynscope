@@ -434,6 +434,12 @@ final class AIFlow {
             do {
                 let mechanic = Mechanic(diag: diag, car: car, log: flow.log)
                 let check = try await mechanic.healthCheck { phase = .checking($0) }
+                guard !check.nothingAnswered else {
+                    // An ignition that is off: no conversation, no model turn; Run health check stays on offer.
+                    phase = .idle
+                    self.error = "No module answered the health check. Is the ignition on?"
+                    return
+                }
                 let provider = settings.provider
                 let conversation = Conversation(
                     vin: car.vin, started: .now, model: model(for: provider) ?? "", carContext: check.contextJSON,
