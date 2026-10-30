@@ -70,3 +70,20 @@ private func assemble(_ stream: String) throws -> (updates: [StreamUpdate], mess
     #expect(ModelList.parse(keyed)?.map(\.name) == ["gpt-6.1-sol"])
     #expect(ModelList.parse(try JSON.parse(Data(#"{"object":"list"}"#.utf8))) == nil)
 }
+
+@Test func aCompletedEventWithoutAnOutputListKeepsTheStreamedItems() throws {
+    let (updates, message) = try assemble(responsesStream([webSearchItem(0, query: "BMW 930A91"), textItem(1, "Two codes, both old")], listsOutput: false))
+    #expect(updates.contains(.text("Two codes, both old")) && updates.last == .finished)
+    #expect(message.status == "completed")
+    #expect(message.output.count == 2)
+    #expect(message.output[1]["content"]?.array?[0]["text"]?.string == "Two codes, both old")
+    #expect(message.usage.webSearchRequests == 1)
+}
+
+@Test func aCompletedEventWithAnEmptyOutputListAlsoKeepsTheStreamedItems() throws {
+    // A listed but empty output must not win over the items the stream delivered.
+    let stream = responsesStream([textItem(0, "Hello owner")]).replacingOccurrences(of: #""status":"completed","output":[\#(textItem(0, "Hello owner").json)]"#, with: #""status":"completed","output":[]"#)
+    let (_, message) = try assemble(stream)
+    #expect(message.output.count == 1)
+    #expect(message.output[0]["content"]?.array?[0]["text"]?.string == "Hello owner")
+}
