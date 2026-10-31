@@ -15,7 +15,7 @@ struct ConnectionLine: View {
                 } else if let warning = flow.link.warning {
                     Text(warning)
                         .foregroundStyle(Color.vynOrangeDark)
-                } else if flow.diag == nil {
+                } else if flow.diag == nil || flow.gaveUp {
                     Text("Not connected")
                         .foregroundStyle(Color.vynMuted)
                     Button("Connect") { flow.tab = .car }

@@ -99,9 +99,6 @@ struct SurveySection: View {
         Section {
             Button("Survey identification") { Task { await flow.survey(address) } }
                 .disabled(flow.busy)
-            if let error = flow.error {
-                Text(error).foregroundStyle(.red)
-            }
         } footer: {
             Text("Debug builds only. Logs what the module answers to F100 to F1FF.")
                 .font(.vyn(.footnote))

@@ -58,10 +58,14 @@ struct RootView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        // A tab change clears the last action's error, as Next and Back did.
+        .onChange(of: flow.tab) { flow.error = nil }
         .task {
-            // At launch only: after a give-up or a Reconnect that failed, connecting again is the owner's to ask for.
-            if flow.link.state == .off, flow.adapter == nil,
+            // Once per launch, not per window: after that, connecting again is the owner's to ask for, after a
+            // Disconnect, a give-up or a Reconnect that failed.
+            if !flow.autoConnectAttempted, flow.link.state == .off, flow.adapter == nil,
                UserDefaults.standard.string(forKey: Flow.adapterKey) != nil {
+                flow.autoConnectAttempted = true
                 await flow.connect()
             }
         }

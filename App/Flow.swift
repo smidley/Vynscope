@@ -36,6 +36,8 @@ final class Flow {
     var backupTask: Task<Void, Never>?
     /// The Log sheet on the iPhone; the Mac opens a window instead.
     var showingLog = false
+    /// The launch-time connect ran; a second window does not run it again.
+    @ObservationIgnored var autoConnectAttempted = false
     @ObservationIgnored private var discoveryTask: Task<Void, Never>?
 
     /// Where `BLELink` saves the identifier of the last adapter it connected to.
@@ -63,6 +65,11 @@ final class Flow {
     /// Whether the link is coming back by itself after a drop; a screen waiting on the adapter says so.
     var reconnecting: Bool {
         if case .reconnecting = link.state { true } else { false }
+    }
+
+    /// Whether the link gave up on the adapter; Reconnect is the way back.
+    var gaveUp: Bool {
+        if case .failed = link.state { true } else { false }
     }
 
     /// What runs now, for the connection line: the scan, at the address it is at with the modules that answered so
