@@ -43,7 +43,9 @@ struct RootView: View {
 
     var body: some View {
         @Bindable var flow = flow
-        TabView(selection: $flow.tab) {
+        // The owner's own tab pick clears the last action's error, as Next and Back did; a switch the flow makes keeps
+        // its reason.
+        TabView(selection: Binding(get: { flow.tab }, set: { flow.tab = $0; flow.error = nil })) {
             Tab("Car", systemImage: "car", value: .car) {
                 NavigationStack { CarTab().tabRoot("Car") }
             }
@@ -58,8 +60,6 @@ struct RootView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
-        // A tab change clears the last action's error, as Next and Back did.
-        .onChange(of: flow.tab) { flow.error = nil }
         .task {
             // Once per launch, not per window: after that, connecting again is the owner's to ask for, after a
             // Disconnect, a give-up or a Reconnect that failed.

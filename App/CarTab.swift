@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// The adapter and the car: the adapter's state and what it says it is, Connect, Reconnect once the link gave up or
-/// a known car's adapter was dropped, Disconnect and Forget adapter; then Read, the VIN with the car's nickname, and
-/// the other cars on file.
+/// The adapter and the car: the adapter's state and what it says it is, Connect, Reconnect while a car is known and
+/// the link gave up or its adapter was dropped, Disconnect and Forget adapter; then Read, the VIN with the car's
+/// nickname, and the other cars on file.
 struct CarTab: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -41,8 +41,9 @@ struct CarTab: View {
             Section {
                 Button("Connect") { Task { await flow.connect() } }
                     .disabled(flow.busy || flow.reconnecting)
-                // The link gave up, or a known car's adapter was dropped by an action's error (`Flow.explain`).
-                if (flow.diag == nil && flow.vin != nil) || flow.gaveUp {
+                // A car is known and the link gave up, or an action's error dropped its adapter (`Flow.explain`).
+                // With no car, Connect alone is offered: it reads the car.
+                if flow.vin != nil && (flow.diag == nil || flow.gaveUp) {
                     if flow.error == nil {
                         Text(reconnectReason)
                             .foregroundStyle(.red)
