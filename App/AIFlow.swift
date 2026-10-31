@@ -148,11 +148,12 @@ final class AIFlow {
     }
 
     /// Hands the open conversation a fresh fault read that no conversation was given yet, as an owner message
-    /// (`faultSummary`) the mechanic answers as a normal turn. Nothing while a check or a turn runs, or without a
-    /// conversation.
+    /// (`faultSummary`) the mechanic answers as a normal turn. Nothing while a check or a turn runs, without a
+    /// conversation, or without a live, idle adapter (no `Diag`, a give-up, `busy`): the read is never sent into a dead
+    /// link or a busy adapter, and stays for the next visit.
     func handFaults() async {
-        guard phase == .ready, conversation != nil, let report = flow.faultReport, report.isFresh(at: .now),
-              flow.faultReadAt != handedReadAt else { return }
+        guard phase == .ready, conversation != nil, flow.diag != nil, !flow.gaveUp, !flow.busy,
+              let report = flow.faultReport, report.isFresh(at: .now), flow.faultReadAt != handedReadAt else { return }
         handedReadAt = flow.faultReadAt
         send(report.faultSummary)
     }

@@ -47,6 +47,7 @@ struct FaultCodesView: View {
                         }
                     } header: {
                         Text(module.name.map { "\($0) · \(module.address)" } ?? "0x\(module.address)")
+                            .textCase(nil)
                     } footer: {
                         if obd.isEmpty, module.address == report.modules.last?.address { readAt }
                     }
@@ -58,6 +59,7 @@ struct FaultCodesView: View {
                         }
                     } header: {
                         Text("OBD")
+                            .textCase(nil)
                     } footer: {
                         readAt
                     }
