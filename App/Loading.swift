@@ -1,25 +1,27 @@
 import SwiftUI
 
 /// The app's mark, the ink V with the orange pulse, the pulse drawn again every 1.6 s: a wait with no count, as a
-/// connect, the mechanic thinking or a read starting. Under reduced motion it holds still, drawn in full. `size` is
-/// its width.
+/// connect, the mechanic thinking or a read starting. The beat runs from the clock, so it goes on across a tab switch,
+/// a push and pop or a recycled row. Under reduced motion it holds still, drawn in full. `size` is its width; the
+/// pulse's line is never thinner than a point.
 struct PulseMark: View {
     var size: CGFloat = 22
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var drawn = false
 
     var body: some View {
         ZStack {
             V().fill(Color.vynInk)
-            Pulse()
-                .trim(from: 0, to: (reduceMotion || drawn) ? 1 : 0)
-                .stroke(
-                    Color.vynOrange, style: StrokeStyle(lineWidth: 3.5 * size / 128, lineCap: .round, lineJoin: .round))
-                // Scoped to the pulse: `withAnimation` in `onAppear` would also repeat a layout change of that update.
-                .animation(.easeInOut(duration: 1.6).repeatForever(autoreverses: false), value: drawn)
-                .onAppear { drawn = !reduceMotion }
-                // A change of reduced motion makes a new pulse: still while it is on, beating again once it is off.
-                .id(reduceMotion)
+            TimelineView(.animation(paused: reduceMotion)) { context in
+                // How far into its beat the pulse is, 0 to 1; 1 under reduced motion.
+                let phase = reduceMotion
+                    ? 1 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.6) / 1.6
+                Pulse()
+                    // Eased in and out, back to empty at the end of each beat.
+                    .trim(from: 0, to: 0.5 - cos(.pi * phase) / 2)
+                    .stroke(
+                        Color.vynOrange,
+                        style: StrokeStyle(lineWidth: max(1, 3.5 * size / 128), lineCap: .round, lineJoin: .round))
+            }
         }
         .frame(width: size, height: size * 104 / 128)
         .accessibilityElement()
@@ -92,14 +94,17 @@ struct ProgressLine: View {
     }
 }
 
-/// The scan's progress line: the address it is at, of FF, and the modules that answered so far.
+/// The scan's progress line: the address it is at, of FF, and the modules that answered so far; Reconnecting to the
+/// adapter… while the link comes back.
 struct ScanProgress: View {
     @Environment(Flow.self) private var flow
 
     var body: some View {
         ProgressLine(
             value: Double(flow.scanned), total: 255,
-            label: "Scanning \(String(format: "%02X", flow.scanned)) of FF · \(flow.modules.count) answered so far")
+            label: flow.reconnecting
+                ? "Reconnecting to the adapter…"
+                : "Scanning \(String(format: "%02X", flow.scanned)) of FF · \(flow.modules.count) answered so far")
     }
 }
 

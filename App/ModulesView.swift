@@ -18,10 +18,7 @@ struct ModulesView: View {
                         ?? "no backup yet")
                 }
             }
-            if flow.discovering, flow.reconnecting {
-                Text("Reconnecting to the adapter…")
-                    .foregroundStyle(Color.vynMuted)
-            } else if flow.discovering {
+            if flow.discovering {
                 ScanProgress()
             }
             // Where the first modules will be, until one answers.
