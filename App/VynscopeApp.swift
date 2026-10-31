@@ -50,7 +50,7 @@ struct RootView: View {
                 NavigationStack { CarTab().tabRoot("Car") }
             }
             Tab("Diagnostics", systemImage: "stethoscope", value: .diagnostics) {
-                NavigationStack { AIStep().tabRoot("Fault codes") }
+                NavigationStack { FaultCodesView().tabRoot("Fault codes") }
             }
             Tab("Programming", systemImage: "cpu", value: .programming) {
                 NavigationStack { ModulesStep().tabRoot("Modules") }
@@ -63,9 +63,10 @@ struct RootView: View {
         .task {
             // Once per launch, not per window: after that, connecting again is the owner's to ask for, after a
             // Disconnect, a give-up or a Reconnect that failed.
-            if !flow.autoConnectAttempted, flow.link.state == .off, flow.adapter == nil,
+            guard !flow.autoConnectAttempted else { return }
+            flow.autoConnectAttempted = true
+            if flow.link.state == .off, flow.adapter == nil,
                UserDefaults.standard.string(forKey: Flow.adapterKey) != nil {
-                flow.autoConnectAttempted = true
                 await flow.connect()
             }
         }

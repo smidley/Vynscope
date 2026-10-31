@@ -30,6 +30,12 @@ final class Flow {
     var scanned = 0
     var progress: BackupProgress?
     var lastBackup: URL?
+    /// The last fault read of the car, from Fault codes or the mechanic's health check.
+    var faultReport: HealthCheck?
+    /// When `faultReport` was read; set with it.
+    var faultReadAt: Date?
+    /// What the fault read in progress is doing; nil while none runs.
+    var readingFaults: String?
     var error: String?
     var busy = false
     /// The backup run in progress.
@@ -72,9 +78,10 @@ final class Flow {
         if case .failed = link.state { true } else { false }
     }
 
-    /// What runs now, for the connection line: the scan, at the address it is at with the modules that answered so
-    /// far, else the backup, at the module it reads; nil while neither runs.
+    /// What runs now, for the connection line: the fault read at its step, else the scan, at the address it is at with
+    /// the modules that answered so far, else the backup, at the module it reads; nil while none runs.
     var activity: String? {
+        if let readingFaults { return readingFaults }
         if discovering { return "Scanning \(String(format: "%02X", scanned)) of FF · \(modules.count) answered" }
         if backupTask != nil, let progress {
             return "Backing up · module \(progress.moduleIndex + 1) of \(progress.moduleCount)"
@@ -161,8 +168,8 @@ final class Flow {
         forgetCar()
     }
 
-    /// Forgets the car read through the adapter and everything found on it, so that nothing of one car is backed
-    /// up under another's VIN.
+    /// Forgets the car read through the adapter and everything found on it, its fault read included, so that nothing
+    /// of one car is backed up under another's VIN or shown as another's codes.
     private func forgetCar() {
         diag?.expectedVIN = nil
         vin = nil
@@ -171,6 +178,8 @@ final class Flow {
         modules = []
         progress = nil
         lastBackup = nil
+        faultReport = nil
+        faultReadAt = nil
     }
 
     /// Read on the Car tab: stops a scan in progress, then reads the car with `readVIN`.
@@ -214,42 +223,20 @@ final class Flow {
         }
     }
 
-    /// Probes every address and lists the modules that answer, as they answer. A scan that is stopped or fails
-    /// leaves the list empty, so that no backup is ever made of part of the car.
+    /// Scans for modules with `scan`, holding `busy`, in a task `endDiscovery()` can stop. A stop says nothing; any
+    /// other failure says why in `error`.
     func discover() async {
         guard let diag, let vin else { error = "Not connected"; return }
         guard !busy else { error = "Still working"; return }
         busy = true
-        discovering = true
         error = nil
-        modules = []
-        scanned = 0
         let task = Task {
-            defer {
-                busy = false
-                discovering = false
-            }
+            defer { busy = false }
             do {
-                // The addresses `Discovery` walks by default, one walk per address. A cancelled walk still finishes
-                // the address in progress, and nothing tells its consumer when; a walk of one address is done with
-                // `diag` once its stream ends. Each walk runs in a task of its own, which a stop does not cancel, so
-                // a stop waits for that end and leaves no request in flight.
-                for address in UInt8.min...UInt8.max where address != 0xF1 {
-                    scanned = Int(address)
-                    if Task.isCancelled {
-                        modules = []
-                        return
-                    }
-                    modules += try await Task {
-                        var found: [DiscoveredModule] = []
-                        for try await module in Discovery.modules(diag: diag, vin: vin, addresses: [address]) {
-                            found.append(module)
-                        }
-                        return found
-                    }.value
-                }
+                try await scan(diag: diag, vin: vin)
+            } catch is CancellationError {
+                // Stopped: the list is empty, and there is nothing to say.
             } catch {
-                modules = []
                 self.error = explain(error)
             }
         }
@@ -257,10 +244,75 @@ final class Flow {
         await task.value
     }
 
+    /// Probes every address and lists the modules that answer, as they answer, with `discovering` and `scanned`
+    /// following the walk; leaves `busy` to the caller. A walk that is cancelled or fails empties the list and throws,
+    /// so that no backup is ever made of part of the car.
+    private func scan(diag: Diag, vin: String) async throws {
+        discovering = true
+        defer { discovering = false }
+        modules = []
+        scanned = 0
+        do {
+            // The addresses `Discovery` walks by default, one walk per address. A cancelled walk still finishes the
+            // address in progress, and nothing tells its consumer when; a walk of one address is done with `diag` once
+            // its stream ends. Each walk runs in a task of its own, which a stop does not cancel, so a stop waits for
+            // that end and leaves no request in flight.
+            for address in UInt8.min...UInt8.max where address != 0xF1 {
+                scanned = Int(address)
+                try Task.checkCancellation()
+                modules += try await Task {
+                    var found: [DiscoveredModule] = []
+                    for try await module in Discovery.modules(diag: diag, vin: vin, addresses: [address]) {
+                        found.append(module)
+                    }
+                    return found
+                }.value
+            }
+        } catch {
+            modules = []
+            throw error
+        }
+    }
+
     /// Stops a scan in progress and waits until it no longer uses `diag`.
     private func endDiscovery() async {
         discoveryTask?.cancel()
         await discoveryTask?.value
+    }
+
+    /// Reads every module's fault codes and standard OBD-II, as the health check reads them, into `faultReport`, with
+    /// `readingFaults` following the read; scans for modules first when none is listed. Nothing is cleared.
+    func readFaults() async {
+        guard let diag, let vin, !gaveUp else { error = "Not connected"; return }
+        guard !busy else { error = "Still working"; return }
+        busy = true
+        defer { busy = false }
+        error = nil
+        do {
+            if modules.isEmpty {
+                try await scan(diag: diag, vin: vin)
+                guard !modules.isEmpty else { error = "No module answered the scan"; return }
+            }
+            guard case let (diag, car)? = connectedCar() else { error = "Not connected"; return }
+            readingFaults = "Reading fault codes …"
+            defer { readingFaults = nil }
+            faultReport = try await Mechanic(diag: diag, car: car, log: log).healthCheck { readingFaults = $0 }
+            faultReadAt = .now
+        } catch is CancellationError {
+            error = "Cancelled"
+        } catch {
+            self.error = explain(error)
+        }
+    }
+
+    /// The `Diag` to the connected car and the car as the mechanic sees it; nil when no car is connected with its VIN
+    /// read.
+    func connectedCar() -> (diag: Diag, car: MechanicCar)? {
+        guard let diag, let vin, let adapter else { return nil }
+        let car = MechanicCar(
+            vin: vin, nickname: self.car?.nickname ?? "", adapter: adapter, modules: modules,
+            latestBackup: latestBackup())
+        return (diag, car)
     }
 
     /// Starts a backup of every listed module into one file in the Backups folder. `progress` follows the run,
@@ -371,10 +423,10 @@ final class Flow {
     }
 
     /// What to show for `error`, which ended an action: after a give-up the link's own message, which asks for
-    /// Reconnect, otherwise `describe`'s. The flow follows suit and says why in `error` too, so that the AI step, which
-    /// hides its own error line without a `Diag`, shows it as well. An adapter the link gave up on, that kept dropping,
-    /// or whose car stayed silent after a drop is dropped with its `Diag` until Reconnect sets it up and checks the car
-    /// again; the car is kept. A different car is forgotten and the owner goes back to Car.
+    /// Reconnect, otherwise `describe`'s. The flow follows suit and says why in `error` too, so that the Mechanic
+    /// screen, which hides its own error line without a `Diag`, shows it as well. An adapter the link gave up on, that
+    /// kept dropping, or whose car stayed silent after a drop is dropped with its `Diag` until Reconnect sets it up and
+    /// checks the car again; the car is kept. A different car is forgotten and the owner goes back to Car.
     func explain(_ error: any Error) -> String {
         var text = Self.describe(error)
         if case LinkError.disconnected = error, case .failed(let message) = link.state { text = message }

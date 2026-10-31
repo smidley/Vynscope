@@ -1,9 +1,10 @@
 import BMWCodingCore
 import SwiftUI
 
-/// The AI mechanic: the notice to sign in, the health check as it runs, or the chat about the connected car, with
-/// New conversation in the toolbar.
-struct AIStep: View {
+/// The AI mechanic, pushed from Fault codes: the notice to sign in, Not connected, the health check as it runs, or
+/// the chat about the connected car, with New conversation in the toolbar. Opening it hands the conversation a fresh
+/// fault read (`AIFlow.handFaults()`); leaving it stops nothing.
+struct MechanicView: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
     @State private var confirmingNew = false
@@ -22,7 +23,7 @@ struct AIStep: View {
                     }
                 }
                 .formStyle(.grouped)
-            } else if flow.diag == nil {
+            } else if flow.diag == nil || flow.gaveUp {
                 Form { Text("Not connected") }
                     .formStyle(.grouped)
             } else if case .checking(let step) = ai.phase {
@@ -52,14 +53,20 @@ struct AIStep: View {
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
         .connectionLine()
-        .task { await ai.enter() }
-        // Leaving the screen, for another tab, stops a check or a turn.
-        .onDisappear { ai.stop() }
+        .navigationTitle("Mechanic")
+        .task {
+            ai.mechanicVisible = true
+            await ai.enter()
+            await ai.handFaults()
+        }
+        // Leaving the screen, for Fault codes or another tab, stops nothing: a check or a turn runs on until its Stop.
+        .onDisappear { ai.mechanicVisible = false }
         .toolbar {
             ToolbarItem {
                 Button("New conversation", systemImage: "square.and.pencil") { confirmingNew = true }
                     .disabled(flow.busy || flow.diag == nil || !ai.hasCredentials)
             }
+            ToolbarItem { LogButton() }
         }
         .confirmationDialog("Start a new conversation?", isPresented: $confirmingNew) {
             Button("New conversation", role: .destructive) { Task { await ai.newConversation() } }

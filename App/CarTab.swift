@@ -51,7 +51,7 @@ struct CarTab: View {
                     Button("Reconnect") {
                         Task {
                             await flow.reconnect()
-                            if flow.diag != nil { ai.error = nil }  // the AI step's line that asked for it
+                            if flow.diag != nil { ai.error = nil }  // the mechanic's line that asked for it
                         }
                     }
                     .disabled(flow.busy || flow.reconnecting)
