@@ -31,7 +31,7 @@ struct ModulesStep: View {
         .connectionLine()
         .navigationDestination(for: DiscoveredModule.self) { ModuleDetailView(module: $0) }
         .task {
-            if flow.modules.isEmpty, !flow.discovering { await flow.discover() }
+            if flow.modules.isEmpty, !flow.discovering, flow.diag != nil, flow.vin != nil { await flow.discover() }
         }
     }
 }

@@ -40,6 +40,7 @@ struct ConnectionLine: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal)
         .padding(.vertical, 6)
+        .background(Color.vynIvory)
     }
 
     /// `Connected · <nickname, or the VIN's last four> · <n> modules`: the car once it was read, the count once a scan

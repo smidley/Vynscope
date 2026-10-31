@@ -23,7 +23,7 @@ struct VynscopeApp: App {
                 .tint(Color.vynOrange)
         }
         #if os(macOS)
-        .defaultSize(width: 420, height: 760)
+        .defaultSize(width: 720, height: 760)
         #endif
 
         #if os(macOS)
@@ -37,7 +37,7 @@ struct VynscopeApp: App {
 }
 
 /// The four tabs, a navigation stack each: a tab bar on the iPhone, a sidebar on the Mac. The iPhone's Log sheet
-/// opens over whichever tab is on screen.
+/// opens over whichever tab is on screen. At launch it connects to the saved adapter by itself.
 struct RootView: View {
     @Environment(Flow.self) private var flow
 
@@ -58,6 +58,13 @@ struct RootView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        .task {
+            // At launch only: after a give-up or a Reconnect that failed, connecting again is the owner's to ask for.
+            if flow.link.state == .off, flow.adapter == nil,
+               UserDefaults.standard.string(forKey: Flow.adapterKey) != nil {
+                await flow.connect()
+            }
+        }
         #if os(iOS)
         .sheet(isPresented: $flow.showingLog) {
             NavigationStack { LogView() }

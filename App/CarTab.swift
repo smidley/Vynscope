@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The adapter and the car: the adapter's state and what it says it is, Connect, Reconnect while a known car's
 /// adapter was dropped, Disconnect and Forget adapter; then Read, the VIN with the car's nickname, and the other cars
-/// on file. At launch it connects to the saved adapter by itself.
+/// on file.
 struct CarTab: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -43,8 +43,10 @@ struct CarTab: View {
                     .disabled(flow.busy || flow.reconnecting)
                 // A known car whose adapter was dropped: after a give-up, or by an action's error (`Flow.explain`).
                 if flow.diag == nil, flow.vin != nil {
-                    Text(reconnectReason)
-                        .foregroundStyle(.red)
+                    if flow.error == nil {
+                        Text(reconnectReason)
+                            .foregroundStyle(.red)
+                    }
                     Button("Reconnect") {
                         Task {
                             await flow.reconnect()
@@ -105,13 +107,6 @@ struct CarTab: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
-        .task {
-            // At launch only: after a give-up or a Reconnect that failed, connecting again is the owner's to ask for.
-            if flow.link.state == .off, flow.adapter == nil,
-               UserDefaults.standard.string(forKey: Flow.adapterKey) != nil {
-                await flow.connect()
-            }
-        }
     }
 
     private var stateText: String {
@@ -125,7 +120,8 @@ struct CarTab: View {
         }
     }
 
-    /// Why Reconnect is offered: the link's message once it has given up, else that the adapter needs setting up.
+    /// Why Reconnect is offered, shown while no error says so: the link's message once it has given up, else that the
+    /// adapter needs setting up.
     private var reconnectReason: String {
         if case .failed(let message) = flow.link.state { return message }
         return "The adapter needs to be set up again."
