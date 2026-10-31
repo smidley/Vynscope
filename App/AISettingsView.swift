@@ -3,8 +3,8 @@ import SwiftUI
 
 /// The mechanic's settings, the Settings tab: the provider, its sign-in (the Anthropic API key, or the ChatGPT
 /// sign-in), its model, the effort of chat turns, the prices the estimates use (Anthropic's), what a conversation sends
-/// and to whom, and Clear conversations. Every change is saved as it is made. The error, when there is one, shows under
-/// the sign-in and under Clear conversations, the two ends of the form.
+/// and to whom, and Clear conversations; on the Mac, last, the app folder. Every change is saved as it is made. The
+/// error, when there is one, shows under the sign-in and under Clear conversations.
 struct AISettingsView: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -88,6 +88,22 @@ struct AISettingsView: View {
                     .disabled(flow.busy)
                 errorLine
             }
+            #if os(macOS)
+            Section {
+                Text(flow.appFolder().path)
+                    .font(.vyn(.caption))
+                    .textSelection(.enabled)
+                // As on Backups: a backup runs on into the folder it started in.
+                Button("Choose folder") { flow.chooseFolder() }
+                    .disabled(flow.backupTask != nil)
+            } header: {
+                Text("App folder")
+            } footer: {
+                Text("Backups, the car book and the conversations are kept here; the log from the next launch.")
+                    .font(.vyn(.footnote))
+                    .foregroundStyle(Color.vynMuted)
+            }
+            #endif
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
@@ -99,7 +115,7 @@ struct AISettingsView: View {
             Text("The saved \(ai.settings.provider.displayName) conversations of every car are deleted.")
         }
         .onChange(of: ai.settings) { ai.saveSettings() }
-        .onChange(of: ai.settings.provider) { Task { await ai.switchProvider() } }
+        .onChange(of: ai.settings.provider) { ai.switchProvider() }
         // Every time the tab opens, and when OpenAI is picked in it: the account's models may have changed.
         .task(id: ai.settings.provider) {
             if ai.settings.provider == .openai, ai.chatGPT != nil {

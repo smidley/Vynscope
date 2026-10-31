@@ -2,13 +2,15 @@ import SwiftUI
 
 /// The app's mark, the ink V with the orange pulse, the pulse drawn again every 1.6 s: a wait with no count, as a
 /// connect, the mechanic thinking or a read starting. The beat runs from the clock, so it goes on across a tab switch,
-/// a push and pop or a recycled row. Under reduced motion it holds still, drawn in full. `size` is its width; the
-/// pulse's line is never thinner than a point.
+/// a push and pop or a recycled row. Under reduced motion it holds still, drawn in full. `size` is its width at the
+/// default text size, which it follows with Dynamic Type; the pulse's line is never thinner than a point.
 struct PulseMark: View {
     var size: CGFloat = 22
+    @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let width = size * scale
         ZStack {
             V().fill(Color.vynInk)
             TimelineView(.animation(paused: reduceMotion)) { context in
@@ -20,10 +22,10 @@ struct PulseMark: View {
                     .trim(from: 0, to: 0.5 - cos(.pi * phase) / 2)
                     .stroke(
                         Color.vynOrange,
-                        style: StrokeStyle(lineWidth: max(1, 3.5 * size / 128), lineCap: .round, lineJoin: .round))
+                        style: StrokeStyle(lineWidth: max(1, 3.5 * width / 128), lineCap: .round, lineJoin: .round))
             }
         }
-        .frame(width: size, height: size * 104 / 128)
+        .frame(width: width, height: width * 104 / 128)
         .accessibilityElement()
         .accessibilityLabel("Working")
     }
@@ -77,17 +79,26 @@ extension PulseMark {
     }
 }
 
-/// A wait with a count: what runs and how far, in words, over a bar in the accent.
+/// A wait with a count: what runs and how far, in words, over a bar in the accent; Stop at the end of the words when
+/// `stop` is given.
 struct ProgressLine: View {
     let value: Double
     let total: Double
     let label: String
+    var stop: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.vyn(.footnote))
-                .foregroundStyle(Color.vynMuted)
+            HStack {
+                Text(label)
+                    .font(.vyn(.footnote))
+                    .foregroundStyle(Color.vynMuted)
+                if let stop {
+                    Spacer()
+                    Button("Stop", action: stop)
+                        .buttonStyle(.borderless)
+                }
+            }
             ProgressView(value: value, total: total)
                 .tint(Color.vynOrange)
         }
@@ -95,7 +106,8 @@ struct ProgressLine: View {
 }
 
 /// The scan's progress line: the address it is at, of FF, and the modules that answered so far; Reconnecting to the
-/// adapter… while the link comes back.
+/// adapter… while the link comes back. Stop ends the scan, or the fault read it is part of; a backup's scan has the
+/// backup's Cancel instead.
 struct ScanProgress: View {
     @Environment(Flow.self) private var flow
 
@@ -104,23 +116,25 @@ struct ScanProgress: View {
             value: Double(flow.scanned), total: 255,
             label: flow.reconnecting
                 ? "Reconnecting to the adapter…"
-                : "Scanning \(String(format: "%02X", flow.scanned)) of FF · \(flow.modules.count) answered so far")
+                : "Scanning \(String(format: "%02X", flow.scanned)) of FF · \(flow.modules.count) answered so far",
+            stop: flow.backupTask == nil ? { flow.stopScan() } : nil)
     }
 }
 
 /// Placeholder rows where a list's first rows will be, two bars each in the line color, a highlight sweeping across
-/// them every 1.4 s; under reduced motion the bars hold still. Hidden from VoiceOver.
+/// them every 1.4 s; under reduced motion the bars hold still. The bars follow Dynamic Type. Hidden from VoiceOver.
 struct SkeletonRows: View {
     var count = 3
+    @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ForEach(0..<count, id: \.self) { _ in
             GeometryReader { proxy in
                 let width = proxy.size.width
-                let bars = VStack(alignment: .leading, spacing: 6) {
-                    Capsule().fill(Color.vynLine).frame(width: width * 0.6, height: 14)
-                    Capsule().fill(Color.vynLine).frame(width: width * 0.35, height: 10)
+                let bars = VStack(alignment: .leading, spacing: 6 * scale) {
+                    Capsule().fill(Color.vynLine).frame(width: width * 0.6, height: 14 * scale)
+                    Capsule().fill(Color.vynLine).frame(width: width * 0.35, height: 10 * scale)
                 }
                 bars
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -139,7 +153,8 @@ struct SkeletonRows: View {
                     // The highlight shows on the bars alone.
                     .mask(alignment: .leading) { bars }
             }
-            .frame(height: 30)
+            // The two bars and the space between them.
+            .frame(height: 30 * scale)
         }
         .accessibilityHidden(true)
     }

@@ -23,8 +23,8 @@ extension HealthCheck {
     }
 
     /// The read as lines the owner can send the mechanic. "I just read the fault codes:" then one line per module in
-    /// order, "<label>: <code> <chip>, <code> <chip>" / "<label>: no faults" / "<label>: <faultRead>", where the label is
-    /// "<name> (<address>)" or "0x<address>" without a name, and the chip of a status that is not a byte is written
+    /// order, "<label>: <code> <chip>, <code> <chip>" / "<label>: no faults" / "<label>: <faultRead>", where the label
+    /// is "<name> (<address>)" or "0x<address>" without a name, and the chip of a status that is not a byte is written
     /// "status <hex>"; then "OBD stored: <codes>" and "OBD pending: <codes>" when there are any (codes
     /// comma-separated, controllers in sorted order); or the one line "no module answered" when `nothingAnswered`.
     public var faultSummary: String {

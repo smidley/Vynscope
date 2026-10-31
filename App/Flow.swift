@@ -3,6 +3,8 @@ import Foundation
 import Observation
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 /// The app's four tabs.
@@ -47,11 +49,17 @@ final class Flow {
     /// The car whose first scan the Modules screen started by itself; it is not started again for that car.
     @ObservationIgnored var autoScannedVIN: String?
     @ObservationIgnored private var discoveryTask: Task<Void, Never>?
+    /// The fault read `readFaults()` runs, which `stopScan()` stops.
+    @ObservationIgnored private var readTask: Task<Void, Never>?
 
     /// Where `BLELink` saves the identifier of the last adapter it connected to.
     static let adapterKey = "adapterIdentifier"
     /// The app folder chosen on the Mac.
     private static let folderKey = "backupFolder"
+    #if os(macOS)
+    /// The folder `useFolder(_:)` saved in the user defaults, held here too, where Settings sees a new choice at once.
+    private var chosenFolder = UserDefaults.standard.string(forKey: Flow.folderKey)
+    #endif
 
     init() {
         link = BLELink(log: log)
@@ -226,11 +234,12 @@ final class Flow {
         }
     }
 
-    /// Scans for modules with `scan`, holding `busy`, in a task `endDiscovery()` can stop. A stop says nothing; any
-    /// other failure says why in `error`.
-    func discover() async {
-        guard let diag, let vin else { error = "Not connected"; return }
-        guard !busy else { error = "Still working"; return }
+    /// Scans for modules with `scan`, holding `busy`, in a task `stopScan()` and `endDiscovery()` can stop. A stop says
+    /// nothing; any other failure says why in `error`. Returns whether a stop ended it.
+    @discardableResult
+    func discover() async -> Bool {
+        guard let diag, let vin else { error = "Not connected"; return false }
+        guard !busy else { error = "Still working"; return false }
         busy = true
         error = nil
         let task = Task {
@@ -245,6 +254,7 @@ final class Flow {
         }
         discoveryTask = task
         await task.value
+        return task.isCancelled
     }
 
     /// Probes every address and lists the modules that answer, as they answer, with `discovering` and `scanned`
@@ -285,31 +295,39 @@ final class Flow {
     }
 
     /// Reads every module's fault codes and standard OBD-II, as the health check reads them, into `faultReport`, with
-    /// `readingFaults` following the read; scans for modules first when none is listed. Nothing is cleared.
+    /// `readingFaults` following the read; scans for modules first when none is listed. Runs in a task `stopScan()` can
+    /// stop, which says Cancelled and keeps the report read before. Nothing is cleared.
     func readFaults() async {
         guard let diag, let vin, !gaveUp else { error = "Not connected"; return }
         guard !busy else { error = "Still working"; return }
         busy = true
-        defer { busy = false }
         error = nil
-        do {
-            try await keepingAwake("Reading the car's fault codes") {
-                if modules.isEmpty {
-                    try await scan(diag: diag, vin: vin)
-                    guard !modules.isEmpty else { error = "No module answered the scan"; return }
+        let task = Task {
+            defer { busy = false }
+            do {
+                try await keepingAwake("Reading the car's fault codes") {
+                    if modules.isEmpty {
+                        try await scan(diag: diag, vin: vin)
+                        guard !modules.isEmpty else { error = "No module answered the scan"; return }
+                    }
+                    guard case let (diag, car)? = connectedCar() else { error = "Not connected"; return }
+                    readingFaults = "Reading fault codes …"
+                    defer { readingFaults = nil }
+                    faultReport = try await Mechanic(diag: diag, car: car, log: log).healthCheck { readingFaults = $0 }
+                    faultReadAt = .now
                 }
-                guard case let (diag, car)? = connectedCar() else { error = "Not connected"; return }
-                readingFaults = "Reading fault codes …"
-                defer { readingFaults = nil }
-                faultReport = try await Mechanic(diag: diag, car: car, log: log).healthCheck { readingFaults = $0 }
-                faultReadAt = .now
+            } catch is CancellationError {
+                error = "Cancelled"
+            } catch {
+                self.error = explain(error)
             }
-        } catch is CancellationError {
-            error = "Cancelled"
-        } catch {
-            self.error = explain(error)
         }
+        readTask = task
+        await task.value
     }
+
+    /// Stops the scan or the fault read in progress; a backup has its own Cancel.
+    func stopScan() { discoveryTask?.cancel(); readTask?.cancel() }
 
     /// The `Diag` to the connected car and the car as the mechanic sees it; nil when no car is connected with its VIN
     /// read, as after a give-up.
@@ -392,6 +410,16 @@ final class Flow {
     /// log from the next launch.
     func useFolder(_ folder: URL) {
         UserDefaults.standard.set(folder.path, forKey: Self.folderKey)
+        chosenFolder = folder.path
+    }
+
+    /// Asks for a folder in the open panel and makes it the app folder with `useFolder(_:)`.
+    func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        if panel.runModal() == .OK, let url = panel.url { useFolder(url) }
     }
     #endif
 
@@ -418,11 +446,11 @@ final class Flow {
     #endif
 
     /// The folder for the log, the car book, the remembered sets and the backups: Documents on the iPhone, where
-    /// Files shows it; on the Mac the folder chosen on Backups, else `~/Documents/Vynscope`. Created if missing.
+    /// Files shows it; on the Mac the folder chosen in Settings or on Backups, else `~/Documents/Vynscope`. Created if
+    /// missing.
     func appFolder() -> URL {
         #if os(macOS)
-        let folder = UserDefaults.standard.string(forKey: Self.folderKey).map { URL(filePath: $0) }
-            ?? URL.documentsDirectory.appending(path: "Vynscope")
+        let folder = chosenFolder.map { URL(filePath: $0) } ?? URL.documentsDirectory.appending(path: "Vynscope")
         #else
         let folder = URL.documentsDirectory
         #endif

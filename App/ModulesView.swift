@@ -38,7 +38,7 @@ struct ModulesView: View {
         .toolbar {
             ToolbarItem {
                 Button(flow.modules.isEmpty ? "Scan" : "Rescan") { Task { await flow.discover() } }
-                    .disabled(flow.busy || flow.diag == nil || flow.gaveUp)
+                    .disabled(flow.busy || flow.diag == nil || flow.gaveUp || flow.vin == nil)
             }
         }
         .task {

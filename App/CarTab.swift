@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The adapter and the car: the adapter's state and what it says it is, Connect, Reconnect while a car is known and
-/// the link gave up or its adapter was dropped, Disconnect and Forget adapter; then Read, the VIN with the car's
-/// nickname, and the other cars on file.
+/// the link gave up or its adapter was dropped, Disconnect and Forget adapter; then Read, the VIN with a field to give
+/// or change the car's nickname, and the other cars on file.
 struct CarTab: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -86,11 +86,7 @@ struct CarTab: View {
                     Text(vin)
                         .font(.vynMono(.body))
                         .textSelection(.enabled)
-                    if let car = flow.car {
-                        LabeledContent("Nickname", value: car.nickname)
-                    } else {
-                        NicknameField()
-                    }
+                    NicknameField()
                 } header: {
                     Text("VIN from the car")
                 } footer: {
@@ -134,21 +130,25 @@ struct CarTab: View {
     }
 }
 
-/// The nickname for a new car: at most 40 characters, saved without the blanks around it.
+/// The car's nickname, to give or to change, starting from the one it has: at most 40 characters, saved without the
+/// blanks around it. Save waits for a nickname that is not empty and not the one saved.
 struct NicknameField: View {
     @Environment(Flow.self) private var flow
     @State private var text = ""
 
     var body: some View {
         let nickname = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let unchanged = nickname.isEmpty || nickname == flow.car?.nickname
         TextField("Nickname", text: $text)
             .onChange(of: text) {
                 if text.count > 40 { text = String(text.prefix(40)) }
             }
             .onSubmit {
-                if !nickname.isEmpty { flow.name(nickname) }
+                if !unchanged { flow.name(nickname) }
             }
+            // The saved nickname, when the field appears and whenever it changes, as after Save.
+            .task(id: flow.car?.nickname) { text = flow.car?.nickname ?? "" }
         Button("Save") { flow.name(nickname) }
-            .disabled(nickname.isEmpty)
+            .disabled(unchanged)
     }
 }

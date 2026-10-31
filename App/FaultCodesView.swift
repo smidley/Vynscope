@@ -1,8 +1,9 @@
 import BMWCodingCore
 import SwiftUI
 
-/// The last fault read: Read fault codes, or Read again, with the read's progress and, until a first report is in,
-/// placeholder rows; then a section per module in the read's order and one for the standard OBD codes. Ask the mechanic
+/// The last fault read: Read fault codes, or Read again; the progress of a scan and of the read, with Stop, and
+/// placeholder rows until a first report is in; then a line asking about the ignition when nothing answered, a section
+/// per module in the read's order, and one for the standard OBD codes or why they could not be read. Ask the mechanic
 /// in the toolbar. Nothing here writes to the car.
 struct FaultCodesView: View {
     @Environment(Flow.self) private var flow
@@ -13,11 +14,18 @@ struct FaultCodesView: View {
                 Button(flow.faultReport == nil ? "Read fault codes" : "Read again") {
                     Task { await flow.readFaults() }
                 }
-                .disabled(flow.busy)
+                .disabled(flow.busy || flow.diag == nil || flow.gaveUp || flow.vin == nil)
+                // The read's own scan, when no module was listed, or another action's.
+                if flow.discovering {
+                    ScanProgress()
+                }
                 if let reading = flow.readingFaults {
                     HStack {
                         PulseMark()
                         Text(reading)
+                        Spacer()
+                        Button("Stop") { flow.stopScan() }
+                            .buttonStyle(.borderless)
                     }
                     // Where the first report's codes will be.
                     if flow.faultReport == nil { SkeletonRows() }
@@ -31,6 +39,14 @@ struct FaultCodesView: View {
             }
             if let report = flow.faultReport {
                 let obd = Self.obdRows(report.obd)
+                // The OBD section, last, carries the time of the read when it shows.
+                let showsOBD = !obd.isEmpty || report.obdError != nil
+                if report.nothingAnswered {
+                    Section {
+                        Text("No module answered. Is the ignition on?")
+                            .foregroundStyle(Color.vynMuted)
+                    }
+                }
                 ForEach(report.modules, id: \.address) { module in
                     Section {
                         if let faults = module.faults {
@@ -52,13 +68,17 @@ struct FaultCodesView: View {
                         Text(module.name.map { "\($0) · \(module.address)" } ?? "0x\(module.address)")
                             .textCase(nil)
                     } footer: {
-                        if obd.isEmpty, module.address == report.modules.last?.address { readAt }
+                        if !showsOBD, module.address == report.modules.last?.address { readAt }
                     }
                 }
-                if !obd.isEmpty {
+                if showsOBD {
                     Section {
                         ForEach(obd.indices, id: \.self) { index in
                             FaultRow(code: obd[index].code, chip: obd[index].chip)
+                        }
+                        if let obdError = report.obdError {
+                            Text("Standard OBD: \(obdError)")
+                                .foregroundStyle(Color.vynMuted)
                         }
                     } header: {
                         Text("OBD")

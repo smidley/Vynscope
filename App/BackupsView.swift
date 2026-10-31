@@ -1,8 +1,5 @@
 import BMWCodingCore
 import SwiftUI
-#if os(macOS)
-import AppKit
-#endif
 
 /// Reads the coding data of every listed module into one backup file, scanning for the modules first when none is
 /// listed. Back up is unavailable while a scan runs; Cancel stops the run in either stage.
@@ -14,7 +11,7 @@ struct BackupsView: View {
 
     var body: some View {
         let running = flow.backupTask != nil
-        let blocked = running || flow.discovering || flow.busy || flow.diag == nil || flow.gaveUp
+        let blocked = running || flow.discovering || flow.busy || flow.diag == nil || flow.gaveUp || flow.vin == nil
         Form {
             Section {
                 if firstBackup, !flow.modules.isEmpty, !flow.discovering {
@@ -37,7 +34,7 @@ struct BackupsView: View {
                     Button("Cancel", role: .cancel) { flow.cancelBackup() }
                 }
                 #if os(macOS)
-                Button("Choose folder") { chooseFolder() }
+                Button("Choose folder") { flow.chooseFolder() }
                     .disabled(running)
                 #endif
             } footer: {
@@ -111,16 +108,6 @@ struct BackupsView: View {
     private func status(_ address: UInt8) -> ModuleBackup.Status? {
         saved?.modules.first(where: { $0.address == address })?.status
     }
-
-    #if os(macOS)
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        if panel.runModal() == .OK, let url = panel.url { flow.useFolder(url) }
-    }
-    #endif
 }
 
 /// One module of the run: where it stands, and what the saved file says of it: a mark when it is complete, why when

@@ -1,16 +1,19 @@
 import BMWCodingCore
 import SwiftUI
 
-/// The AI mechanic, pushed from Fault codes: the notice to sign in, Not connected, the health check as it runs, or
-/// the chat about the connected car, with New conversation in the toolbar. Opening it hands the conversation a fresh
-/// fault read (`AIFlow.handFaults()`); leaving it stops nothing.
+/// The AI mechanic, pushed from Fault codes: the notice to sign in, the chat about the car, which stays readable
+/// whatever the link does, Not connected, No car read, the health check as it runs, or Run health check, with New
+/// conversation in the toolbar. Its first appearance runs the health check when the car has no conversation yet; every
+/// appearance hands the conversation a fresh fault read (`AIFlow.handFaults()`). Leaving it stops nothing.
 struct MechanicView: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
     @State private var confirmingNew = false
+    /// The screen appeared before: a return to it, from another tab, runs no health check by itself.
+    @State private var entered = false
 
     var body: some View {
-        // One container for every state, so that `.task` and `.onDisappear` follow the screen, not the state.
+        // One container for every state, so that `.task` follows the screen, not the state.
         VStack(spacing: 0) {
             if !ai.hasCredentials {
                 Form {
@@ -23,8 +26,14 @@ struct MechanicView: View {
                     }
                 }
                 .formStyle(.grouped)
+            } else if ai.conversation != nil && ai.conversation?.vin == flow.vin {
+                // Whatever the link: the connection line says how it is, and Send waits for the car.
+                ChatView()
             } else if flow.diag == nil || flow.gaveUp {
                 Form { Text("Not connected") }
+                    .formStyle(.grouped)
+            } else if flow.vin == nil {
+                Form { Text("No car read. Turn the ignition on and read it on the Car tab.") }
                     .formStyle(.grouped)
             } else if case .checking(let step) = ai.phase {
                 Form {
@@ -37,9 +46,13 @@ struct MechanicView: View {
                     }
                 }
                 .formStyle(.grouped)
-            } else if ai.phase == .idle, ai.conversation == nil {
+            } else {
                 Form {
                     Section {
+                        // The check's own scan, when no module was listed.
+                        if flow.discovering {
+                            ScanProgress()
+                        }
                         Button("Run health check") { Task { await ai.healthCheck() } }
                             .disabled(flow.busy)
                         if let error = ai.error {
@@ -48,8 +61,6 @@ struct MechanicView: View {
                     }
                 }
                 .formStyle(.grouped)
-            } else {
-                ChatView()
             }
         }
         // Ivory under every state: the forms' own background hidden, the chat on it.
@@ -57,17 +68,17 @@ struct MechanicView: View {
         .background(Color.vynIvory)
         .connectionLine()
         .navigationTitle("Mechanic")
+        // Leaving the screen, for Fault codes or another tab, stops nothing: a check or a turn runs on until its Stop.
         .task {
-            ai.mechanicVisible = true
-            await ai.enter()
+            let first = !entered
+            entered = true
+            await ai.enter(runningCheck: first)
             await ai.handFaults()
         }
-        // Leaving the screen, for Fault codes or another tab, stops nothing: a check or a turn runs on until its Stop.
-        .onDisappear { ai.mechanicVisible = false }
         .toolbar {
             ToolbarItem {
                 Button("New conversation", systemImage: "square.and.pencil") { confirmingNew = true }
-                    .disabled(flow.busy || flow.diag == nil || flow.gaveUp || !ai.hasCredentials)
+                    .disabled(flow.busy || flow.diag == nil || flow.gaveUp || flow.vin == nil || !ai.hasCredentials)
             }
             ToolbarItem { LogButton() }
         }

@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// The line under the title of every screen but the Car tab's: the connection (the car and its modules, how the link
-/// is doing, or Not connected with Connect, which opens the Car tab), what runs now on any tab, and the flow's error.
+/// is doing, Not connected with Connect, or no car read with Read, both buttons opening the Car tab), what runs now on
+/// any tab, and the flow's error.
 struct ConnectionLine: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -19,6 +20,11 @@ struct ConnectionLine: View {
                     Text("Not connected")
                         .foregroundStyle(Color.vynMuted)
                     Button("Connect") { flow.tab = .car }
+                        .buttonStyle(.borderless)
+                } else if flow.vin == nil {
+                    Text("Adapter connected · no car read")
+                        .foregroundStyle(Color.vynMuted)
+                    Button("Read") { flow.tab = .car }
                         .buttonStyle(.borderless)
                 } else {
                     connected
@@ -43,8 +49,8 @@ struct ConnectionLine: View {
         .background(Color.vynIvory)
     }
 
-    /// `Connected · <nickname, or the VIN's last four> · <n> modules`: the car once it was read, the count once a scan
-    /// found modules.
+    /// `Connected · <nickname, or the VIN's last four> · <n> modules`: the car once it was read, the count once a
+    /// scan found modules.
     private var connected: Text {
         let car = flow.car?.nickname ?? flow.vin.map { String($0.suffix(4)) }
         let text = car.map { "Connected · \($0)" } ?? "Connected"
