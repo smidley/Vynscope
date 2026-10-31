@@ -1,9 +1,6 @@
 import BMWCodingCore
 import Foundation
 import Observation
-#if os(iOS)
-import UIKit
-#endif
 
 /// The mechanic's settings, kept as JSON in the user defaults: the provider, the model of each, the effort of chat
 /// turns, and the prices the cost estimates use.
@@ -135,8 +132,8 @@ final class AIFlow {
     }
 
     /// Opens the picked provider's conversation saved for the connected car or, when there is none and the provider's
-    /// credentials are in, runs the health check. Does nothing without a connected car whose VIN was read, after a
-    /// give-up, or while a check or a turn runs.
+    /// credentials are in, runs the health check if the adapter is free, else leaves Run health check on offer. Does
+    /// nothing without a connected car whose VIN was read, after a give-up, or while a check or a turn runs.
     func enter() async {
         guard flow.diag != nil, !flow.gaveUp, let vin = flow.vin, phase == .idle || phase == .ready else { return }
         if conversation?.vin != vin || conversation?.provider != settings.provider {
@@ -144,7 +141,7 @@ final class AIFlow {
             planLimited = false  // that was another conversation's last turn
         }
         phase = conversation == nil ? .idle : .ready
-        if conversation == nil, hasCredentials { await healthCheck() }
+        if conversation == nil, hasCredentials, !flow.busy { await healthCheck() }
     }
 
     /// Hands the open conversation a fresh fault read that no conversation was given yet, as an owner message
@@ -452,7 +449,8 @@ final class AIFlow {
             do {
                 let mechanic = Mechanic(diag: diag, car: car, log: flow.log)
                 let check: HealthCheck
-                if let report = flow.faultReport, report.isFresh(at: .now) {
+                // An ignition-off read is not reused: it must not block Run health check for ten minutes.
+                if let report = flow.faultReport, report.isFresh(at: .now), !report.nothingAnswered {
                     check = report
                 } else {
                     check = try await mechanic.healthCheck { phase = .checking($0) }
@@ -646,13 +644,7 @@ final class AIFlow {
         guard !flow.busy else { error = "Still working"; return }
         flow.busy = true
         defer { flow.busy = false }
-        let awake = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: reason)
-        defer { ProcessInfo.processInfo.endActivity(awake) }
-        #if os(iOS)
-        UIApplication.shared.isIdleTimerDisabled = true
-        defer { UIApplication.shared.isIdleTimerDisabled = false }
-        #endif
-        await body()
+        await flow.keepingAwake(reason) { await body() }
     }
 
     private var store: ConversationStore { ConversationStore(directory: flow.appFolder()) }

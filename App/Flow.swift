@@ -182,7 +182,8 @@ final class Flow {
         faultReadAt = nil
     }
 
-    /// Read on the Car tab: stops a scan in progress, then reads the car with `readVIN`.
+    /// Read on the Car tab: stops a scan `discover()` started, then reads the car with `readVIN`. A scan run inside
+    /// another action, as a fault read's, is not stopped: the action holds `busy`, and Read answers `Still working`.
     func readCar() async {
         await endDiscovery()
         guard let diag else { error = "Not connected"; return }
@@ -233,7 +234,7 @@ final class Flow {
         let task = Task {
             defer { busy = false }
             do {
-                try await scan(diag: diag, vin: vin)
+                try await keepingAwake("Scanning the car") { try await scan(diag: diag, vin: vin) }
             } catch is CancellationError {
                 // Stopped: the list is empty, and there is nothing to say.
             } catch {
@@ -289,15 +290,17 @@ final class Flow {
         defer { busy = false }
         error = nil
         do {
-            if modules.isEmpty {
-                try await scan(diag: diag, vin: vin)
-                guard !modules.isEmpty else { error = "No module answered the scan"; return }
+            try await keepingAwake("Reading the car's fault codes") {
+                if modules.isEmpty {
+                    try await scan(diag: diag, vin: vin)
+                    guard !modules.isEmpty else { error = "No module answered the scan"; return }
+                }
+                guard case let (diag, car)? = connectedCar() else { error = "Not connected"; return }
+                readingFaults = "Reading fault codes …"
+                defer { readingFaults = nil }
+                faultReport = try await Mechanic(diag: diag, car: car, log: log).healthCheck { readingFaults = $0 }
+                faultReadAt = .now
             }
-            guard case let (diag, car)? = connectedCar() else { error = "Not connected"; return }
-            readingFaults = "Reading fault codes …"
-            defer { readingFaults = nil }
-            faultReport = try await Mechanic(diag: diag, car: car, log: log).healthCheck { readingFaults = $0 }
-            faultReadAt = .now
         } catch is CancellationError {
             error = "Cancelled"
         } catch {
@@ -306,9 +309,9 @@ final class Flow {
     }
 
     /// The `Diag` to the connected car and the car as the mechanic sees it; nil when no car is connected with its VIN
-    /// read.
+    /// read, as after a give-up.
     func connectedCar() -> (diag: Diag, car: MechanicCar)? {
-        guard let diag, let vin, let adapter else { return nil }
+        guard let diag, let vin, let adapter, !gaveUp else { return nil }
         let car = MechanicCar(
             vin: vin, nickname: self.car?.nickname ?? "", adapter: adapter, modules: modules,
             latestBackup: latestBackup())
@@ -331,25 +334,33 @@ final class Flow {
             progress = nil
             lastBackup = nil
             // A first sweep takes an hour; sleep would drop the adapter. The Mac stays awake, the iPhone's screen on.
-            let activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "Backing up the car")
-            defer { ProcessInfo.processInfo.endActivity(activity) }
-            #if os(iOS)
-            UIApplication.shared.isIdleTimerDisabled = true
-            defer { UIApplication.shared.isIdleTimerDisabled = false }
-            #endif
-            do {
-                lastBackup = try await BackupRunner.run(
-                    diag: diag, modules: modules, vin: vin, nickname: car?.nickname ?? "", adapter: adapter,
-                    appVersion: Self.appVersion, store: BackupStore(directory: file("Backups")),
-                    setsURL: file("remembered-dids.json"), fullRescan: fullRescan
-                ) { self.progress = $0 }
-            } catch is CancellationError {
-                progress = nil  // the module being read was stopped, not failed
-                error = "Cancelled"
-            } catch {
-                self.error = explain(error)
+            await keepingAwake("Backing up the car") {
+                do {
+                    lastBackup = try await BackupRunner.run(
+                        diag: diag, modules: modules, vin: vin, nickname: car?.nickname ?? "", adapter: adapter,
+                        appVersion: Self.appVersion, store: BackupStore(directory: file("Backups")),
+                        setsURL: file("remembered-dids.json"), fullRescan: fullRescan
+                    ) { self.progress = $0 }
+                } catch is CancellationError {
+                    progress = nil  // the module being read was stopped, not failed
+                    error = "Cancelled"
+                } catch {
+                    self.error = explain(error)
+                }
             }
         }
+    }
+
+    /// Runs `body` with the device kept awake: a first scan or a fault read takes minutes, and sleep would drop the
+    /// adapter.
+    func keepingAwake<T>(_ reason: String, _ body: () async throws -> T) async rethrows -> T {
+        let activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: reason)
+        defer { ProcessInfo.processInfo.endActivity(activity) }
+        #if os(iOS)
+        UIApplication.shared.isIdleTimerDisabled = true
+        defer { UIApplication.shared.isIdleTimerDisabled = false }
+        #endif
+        return try await body()
     }
 
     func cancelBackup() {

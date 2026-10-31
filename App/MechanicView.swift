@@ -64,7 +64,7 @@ struct MechanicView: View {
         .toolbar {
             ToolbarItem {
                 Button("New conversation", systemImage: "square.and.pencil") { confirmingNew = true }
-                    .disabled(flow.busy || flow.diag == nil || !ai.hasCredentials)
+                    .disabled(flow.busy || flow.diag == nil || flow.gaveUp || !ai.hasCredentials)
             }
             ToolbarItem { LogButton() }
         }

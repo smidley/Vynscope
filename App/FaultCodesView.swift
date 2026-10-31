@@ -20,7 +20,7 @@ struct FaultCodesView: View {
                     }
                 }
             } footer: {
-                if flow.faultReport == nil, flow.readingFaults == nil {
+                if flow.faultReport == nil, flow.readingFaults == nil, !flow.busy {
                     Text("Reads every module's fault memory and the standard codes. Nothing is cleared.")
                         .font(.vyn(.footnote))
                         .foregroundStyle(Color.vynMuted)
