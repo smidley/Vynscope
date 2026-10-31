@@ -28,6 +28,7 @@ struct ModulesStep: View {
         }
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
+        .connectionLine()
         .navigationDestination(for: DiscoveredModule.self) { ModuleDetailView(module: $0) }
         .task {
             if flow.modules.isEmpty, !flow.discovering { await flow.discover() }

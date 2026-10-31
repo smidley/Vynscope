@@ -26,6 +26,7 @@ struct ModuleDetailView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
+        .connectionLine()
         .navigationTitle(module.title)
         .toolbar {
             ToolbarItem { LogButton() }

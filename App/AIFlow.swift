@@ -100,6 +100,8 @@ final class AIFlow {
     private(set) var planLimited = false
     /// The OpenAI models that refused web search on this account, which every later turn asks without it.
     private(set) var webSearchUnavailable: Set<String> = []
+    /// Whether the mechanic's screen is on view, where picking another provider runs the health check at once.
+    var mechanicVisible = false
     private unowned let flow: Flow
     private let session: ChatGPTSession
     /// The health check or the turn in progress, which Stop cancels.
@@ -248,7 +250,7 @@ final class AIFlow {
     }
 
     /// Shows the conversation of the provider just picked for the connected car or, when there is none and the
-    /// provider's credentials are in, runs the health check; on another step than the AI step, entering it runs the
+    /// provider's credentials are in, runs the health check; while the mechanic is not on view, entering it runs the
     /// check instead. Nothing while a check or a turn runs.
     func switchProvider() async {
         guard !flow.busy else { return }
@@ -256,7 +258,7 @@ final class AIFlow {
         phase = conversation == nil ? .idle : .ready
         planLimited = false
         error = nil
-        if conversation == nil, hasCredentials, flow.diag != nil, flow.step == .ai { await healthCheck() }
+        if conversation == nil, hasCredentials, flow.diag != nil, mechanicVisible { await healthCheck() }
     }
 
     /// Signs in with ChatGPT: starts the listener for the redirect, then opens OpenAI's sign-in page, in the default

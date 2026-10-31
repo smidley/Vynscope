@@ -13,7 +13,7 @@ struct VynscopeApp: App {
 
     var body: some Scene {
         WindowGroup {
-            FlowView()
+            RootView()
                 .environment(flow)
                 .environment(ai)
                 // Text keeps the system's primary color: a foreground style here would recolor every control too,
@@ -36,103 +36,43 @@ struct VynscopeApp: App {
     }
 }
 
-/// The current step under the step indicator and its error, with Reconnect there while the adapter is gone, and Back,
-/// Log, Settings (the AI step has its own) and Next in the toolbar.
-struct FlowView: View {
+/// The four tabs, a navigation stack each: a tab bar on the iPhone, a sidebar on the Mac. The iPhone's Log sheet
+/// opens over whichever tab is on screen.
+struct RootView: View {
     @Environment(Flow.self) private var flow
-    @Environment(AIFlow.self) private var ai
-    @State private var showingSettings = false
 
     var body: some View {
         @Bindable var flow = flow
-        NavigationStack {
-            VStack(spacing: 0) {
-                StepIndicator()
-                if let error = flow.error ?? reconnectReason {
-                    Text(error)
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal)
-                }
-                if reconnectReason != nil {
-                    Button(flow.busy ? "Reconnecting…" : "Reconnect") {
-                        Task {
-                            await flow.reconnect()
-                            if flow.diag != nil { ai.error = nil }  // the AI step's line that asked for it
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(flow.busy || flow.reconnecting)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
-                    .padding(.top, 4)
-                }
-                switch flow.step {
-                case .connect: ConnectStep()
-                case .car: CarStep()
-                case .modules: ModulesStep()
-                case .backup: BackupStep()
-                case .ai: AIStep()
-                }
+        TabView(selection: $flow.tab) {
+            Tab("Car", systemImage: "car", value: .car) {
+                NavigationStack { CarTab().tabRoot("Car") }
             }
-            .frame(maxHeight: .infinity, alignment: .top)
-            // The navigation stack paints its own background over the window's; this one reaches under its bar.
-            .background(Color.vynIvory)
-            .navigationTitle(Text(flow.step.title))
-            .toolbarTitleDisplayMode(.inline)
-            .toolbar {
-                if flow.step != .connect {
-                    ToolbarItem(placement: .navigation) {
-                        Button("Back") { flow.back() }
-                            .disabled(flow.backupTask != nil)
-                    }
-                }
-                ToolbarItem { LogButton() }
-                if flow.step != .ai {
-                    ToolbarItem {
-                        Button("Settings", systemImage: "gear") { showingSettings = true }
-                    }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button(flow.step == .ai ? "Done" : "Next") { flow.next() }
-                        .disabled(!flow.canGoNext)
-                }
+            Tab("Diagnostics", systemImage: "stethoscope", value: .diagnostics) {
+                NavigationStack { AIStep().tabRoot("Fault codes") }
             }
-            .sheet(isPresented: $showingSettings) { AISettingsView() }
+            Tab("Programming", systemImage: "cpu", value: .programming) {
+                NavigationStack { ModulesStep().tabRoot("Modules") }
+            }
+            Tab("Settings", systemImage: "gear", value: .settings) {
+                NavigationStack { AISettingsView().tabRoot("Settings") }
+            }
         }
+        .tabViewStyle(.sidebarAdaptable)
         #if os(iOS)
         .sheet(isPresented: $flow.showingLog) {
             NavigationStack { LogView() }
         }
         #endif
     }
-
-    /// Why the step offers Reconnect, on any step but Connect (whose adapter row says how the link is): the link's
-    /// message once it has given up, else, while an action's error dropped the adapter (`Flow.explain`), that it needs
-    /// setting up. It stands in for the error when none shows: nothing was running, or Back or Next cleared it.
-    private var reconnectReason: String? {
-        guard flow.step != .connect else { return nil }
-        if case .failed(let message) = flow.link.state { return message }
-        return flow.diag == nil ? "The adapter needs to be set up again." : nil
-    }
 }
 
-/// The steps by number and title, the current one bold in the accent; Connect in the warning color while the link
-/// reconnects or warns, unless it is the current one.
-struct StepIndicator: View {
-    @Environment(Flow.self) private var flow
-
-    var body: some View {
-        HStack {
-            ForEach(Step.allCases, id: \.self) { step in
-                let current = step == flow.step
-                let warned = step == .connect && (flow.reconnecting || flow.link.warning != nil)
-                Text(step.indicatorLabel)
-                    .font(current ? .vyn(.caption, weight: .bold) : .vyn(.caption))
-                    .foregroundStyle(current ? Color.vynOrange : warned ? Color.vynOrangeDark : Color.vynMuted)
-                    .frame(maxWidth: .infinity)
-            }
-        }
-        .padding(.vertical, 8)
+private extension View {
+    /// A tab's root screen: its title inline and Log in the toolbar, over ivory that reaches under the bar, where the
+    /// navigation stack paints its own background over the window's.
+    func tabRoot(_ title: LocalizedStringKey) -> some View {
+        navigationTitle(title)
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem { LogButton() } }
+            .background(Color.vynIvory)
     }
 }
