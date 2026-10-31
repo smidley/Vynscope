@@ -40,6 +40,7 @@ struct VynscopeApp: App {
 /// opens over whichever tab is on screen. At launch it connects to the saved adapter by itself.
 struct RootView: View {
     @Environment(Flow.self) private var flow
+    @State private var programmingPath = NavigationPath()
 
     var body: some View {
         @Bindable var flow = flow
@@ -53,7 +54,10 @@ struct RootView: View {
                 NavigationStack { FaultCodesView().tabRoot("Fault codes") }
             }
             Tab("Programming", systemImage: "cpu", value: .programming) {
-                NavigationStack { ModulesStep().tabRoot("Modules") }
+                NavigationStack(path: $programmingPath) { ModulesView().tabRoot("Modules") }
+                    // A different car pops the old car's module detail; its coding would otherwise reload from this
+                    // car's backup.
+                    .onChange(of: flow.vin) { programmingPath = NavigationPath() }
             }
             Tab("Settings", systemImage: "gear", value: .settings) {
                 NavigationStack { AISettingsView().tabRoot("Settings") }

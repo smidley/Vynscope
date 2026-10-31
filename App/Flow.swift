@@ -26,7 +26,7 @@ final class Flow {
     var otherCars: [CarRecord] = []
     var modules: [DiscoveredModule] = []
     var discovering = false
-    /// The module address the scan is at, 0...255; the Modules step draws it as progress.
+    /// The module address the scan is at, 0...255; Modules and Backups draw it as progress.
     var scanned = 0
     var progress: BackupProgress?
     var lastBackup: URL?
@@ -275,7 +275,8 @@ final class Flow {
         }
     }
 
-    /// Stops a scan in progress and waits until it no longer uses `diag`.
+    /// Stops the scan `discover()` started, if it still runs, and waits until it no longer uses `diag`. A fault read's
+    /// or a backup's scan is not in `discoveryTask` and runs on.
     private func endDiscovery() async {
         discoveryTask?.cancel()
         await discoveryTask?.value
@@ -318,14 +319,16 @@ final class Flow {
         return (diag, car)
     }
 
-    /// Starts a backup of every listed module into one file in the Backups folder. `progress` follows the run,
-    /// `lastBackup` is the file once it is written, and an error or a cancel ends up in `error`. A full rescan
-    /// sweeps every module in full even where a set of identifiers is remembered.
+    /// Starts a backup of every listed module into one file in the Backups folder, scanning for the modules first
+    /// with `scan` when none is listed; a scan that finds none writes no file. Refused while a scan runs, which is left
+    /// to finish. `progress` follows the run, `lastBackup` is the file once it is written, and an error or a cancel, in
+    /// either stage, ends up in `error`. A full rescan sweeps every module in full even where a set of identifiers is
+    /// remembered.
     func backup(fullRescan: Bool) {
         guard backupTask == nil else { error = "Still working"; return }
         backupTask = Task {
             defer { backupTask = nil }
-            await endDiscovery()
+            guard !discovering else { error = "Scanning; try again when it is done"; return }
             guard let diag, let vin, let adapter else { error = "Not connected"; return }
             guard !busy else { error = "Still working"; return }
             busy = true
@@ -336,6 +339,8 @@ final class Flow {
             // A first sweep takes an hour; sleep would drop the adapter. The Mac stays awake, the iPhone's screen on.
             await keepingAwake("Backing up the car") {
                 do {
+                    if modules.isEmpty { try await scan(diag: diag, vin: vin) }
+                    guard !modules.isEmpty else { error = "No module answered the scan"; return }
                     lastBackup = try await BackupRunner.run(
                         diag: diag, modules: modules, vin: vin, nickname: car?.nickname ?? "", adapter: adapter,
                         appVersion: Self.appVersion, store: BackupStore(directory: file("Backups")),
@@ -411,8 +416,7 @@ final class Flow {
     #endif
 
     /// The folder for the log, the car book, the remembered sets and the backups: Documents on the iPhone, where
-    /// Files shows it; on the Mac the folder chosen on the Backup step, else `~/Documents/Vynscope`. Created if
-    /// missing.
+    /// Files shows it; on the Mac the folder chosen on Backups, else `~/Documents/Vynscope`. Created if missing.
     func appFolder() -> URL {
         #if os(macOS)
         let folder = UserDefaults.standard.string(forKey: Self.folderKey).map { URL(filePath: $0) }
