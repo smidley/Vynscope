@@ -17,7 +17,7 @@ struct BackupsView: View {
         let blocked = running || flow.discovering || flow.busy || flow.diag == nil || flow.gaveUp
         Form {
             Section {
-                if firstBackup, !flow.modules.isEmpty {
+                if firstBackup, !flow.modules.isEmpty, !flow.discovering {
                     Text("""
                         The first backup of this car reads every identifier of every module and takes about an hour. \
                         Keep the ignition on and this device near the car. Later backups take minutes.
