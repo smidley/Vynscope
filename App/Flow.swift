@@ -44,6 +44,8 @@ final class Flow {
     var showingLog = false
     /// The launch-time connect ran; a second window does not run it again.
     @ObservationIgnored var autoConnectAttempted = false
+    /// The car whose first scan the Modules screen started by itself; it is not started again for that car.
+    @ObservationIgnored var autoScannedVIN: String?
     @ObservationIgnored private var discoveryTask: Task<Void, Never>?
 
     /// Where `BLELink` saves the identifier of the last adapter it connected to.

@@ -27,7 +27,7 @@ struct ConnectionLine: View {
             }
             if let activity {
                 HStack {
-                    ProgressView()
+                    PulseMark(size: 14)
                     Text(activity)
                 }
             }

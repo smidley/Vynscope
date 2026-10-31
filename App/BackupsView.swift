@@ -5,7 +5,7 @@ import AppKit
 #endif
 
 /// Reads the coding data of every listed module into one backup file, scanning for the modules first when none is
-/// listed. Back up waits while a scan runs; Cancel stops the run in either stage.
+/// listed. Back up is unavailable while a scan runs; Cancel stops the run in either stage.
 struct BackupsView: View {
     @Environment(Flow.self) private var flow
     /// The file the last run wrote, read back for the modules it marks complete or partial.
@@ -58,29 +58,16 @@ struct BackupsView: View {
                 #endif
             }
             if running, flow.discovering {
-                Section {
-                    ProgressView(value: Double(flow.scanned), total: 255) {
-                        Text("""
-                            Scanning \(String(format: "%02X", flow.scanned)) of FF · \(flow.modules.count) answered \
-                            so far
-                            """)
-                            .font(.vyn(.footnote))
-                            .foregroundStyle(Color.vynMuted)
-                    }
-                    .tint(Color.vynOrange)
-                }
+                Section { ScanProgress() }
             }
             if running, let progress = flow.progress {
                 Section {
-                    ProgressView(value: overall(progress)) {
-                        if flow.reconnecting {
-                            Text("Reconnecting to the adapter…")
-                        } else {
-                            Text("Module \(progress.moduleIndex + 1) of \(progress.moduleCount)")
-                        }
-                    } currentValueLabel: {
-                        Text("\(progress.didsDone) of \(progress.didsTotal) identifiers")
-                    }
+                    ProgressLine(
+                        value: overall(progress), total: 1,
+                        label: flow.reconnecting
+                            ? "Reconnecting to the adapter…"
+                            : "Backing up · module \(progress.moduleIndex + 1) of \(progress.moduleCount) · "
+                                + "\(progress.didsDone) of \(progress.didsTotal) identifiers")
                 }
             }
             Section("Modules") {

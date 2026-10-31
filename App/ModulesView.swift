@@ -6,8 +6,8 @@ import SwiftUI
 /// toolbar.
 struct ModulesView: View {
     @Environment(Flow.self) private var flow
-    /// The car's newest backup, for the Backups row. Read when the car or `Flow.lastBackup` changes, never in `body`,
-    /// which runs again at every address the scan probes.
+    /// The car's newest backup, for the Backups row. Read when the screen appears and when the car or
+    /// `Flow.lastBackup` changes, never in `body`, which runs again at every address the scan probes.
     @State private var latest: Backup? = nil
 
     var body: some View {
@@ -22,20 +22,11 @@ struct ModulesView: View {
                 Text("Reconnecting to the adapter…")
                     .foregroundStyle(Color.vynMuted)
             } else if flow.discovering {
-                ProgressView(value: Double(flow.scanned), total: 255) {
-                    Text("Scanning \(String(format: "%02X", flow.scanned)) of FF · \(flow.modules.count) answered so far")
-                        .font(.vyn(.footnote))
-                        .foregroundStyle(Color.vynMuted)
-                }
-                .tint(Color.vynOrange)
+                ScanProgress()
             }
             // Where the first modules will be, until one answers.
             if flow.discovering, flow.modules.isEmpty {
-                ForEach(0..<3, id: \.self) { _ in
-                    ModuleRow(title: "0x00", description: "module", signed: false)
-                        .redacted(reason: .placeholder)
-                        .accessibilityHidden(true)
-                }
+                SkeletonRows()
             }
             ForEach(flow.modules) { module in
                 NavigationLink(value: module) {
@@ -54,7 +45,9 @@ struct ModulesView: View {
             }
         }
         .task {
-            if flow.modules.isEmpty, !flow.discovering, !flow.busy, flow.diag != nil, flow.vin != nil {
+            if flow.modules.isEmpty, !flow.discovering, !flow.busy, flow.diag != nil, flow.vin != nil,
+               flow.vin != flow.autoScannedVIN {
+                flow.autoScannedVIN = flow.vin
                 await flow.discover()
             }
         }

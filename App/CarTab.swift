@@ -16,8 +16,13 @@ struct CarTab: View {
             }
             Section {
                 LabeledContent("Adapter") {
-                    Text(stateText)
-                        .foregroundStyle(flow.link.state == .ready ? Color.vynGreen : Color.vynMuted)
+                    HStack {
+                        if flow.link.state == .scanning || flow.link.state == .connecting || flow.reconnecting {
+                            PulseMark(size: 14)
+                        }
+                        Text(stateText)
+                            .foregroundStyle(flow.link.state == .ready ? Color.vynGreen : Color.vynMuted)
+                    }
                 }
                 if let warning = flow.link.warning {
                     Text(warning)

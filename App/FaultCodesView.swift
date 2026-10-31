@@ -1,8 +1,9 @@
 import BMWCodingCore
 import SwiftUI
 
-/// The last fault read: Read fault codes, or Read again, with the read's progress; then a section per module in the
-/// read's order and one for the standard OBD codes. Ask the mechanic in the toolbar. Nothing here writes to the car.
+/// The last fault read: Read fault codes, or Read again, with the read's progress and, until a first report is in,
+/// placeholder rows; then a section per module in the read's order and one for the standard OBD codes. Ask the mechanic
+/// in the toolbar. Nothing here writes to the car.
 struct FaultCodesView: View {
     @Environment(Flow.self) private var flow
 
@@ -15,9 +16,11 @@ struct FaultCodesView: View {
                 .disabled(flow.busy)
                 if let reading = flow.readingFaults {
                     HStack {
-                        ProgressView()
+                        PulseMark()
                         Text(reading)
                     }
+                    // Where the first report's codes will be.
+                    if flow.faultReport == nil { SkeletonRows() }
                 }
             } footer: {
                 if flow.faultReport == nil, flow.readingFaults == nil, !flow.busy {

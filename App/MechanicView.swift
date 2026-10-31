@@ -29,7 +29,10 @@ struct MechanicView: View {
             } else if case .checking(let step) = ai.phase {
                 Form {
                     Section {
-                        ProgressView(flow.reconnecting ? "Reconnecting to the adapter…" : step)
+                        HStack {
+                            PulseMark()
+                            Text(flow.reconnecting ? "Reconnecting to the adapter…" : step)
+                        }
                         Button("Stop") { ai.stop() }
                     }
                 }

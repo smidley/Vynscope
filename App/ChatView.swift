@@ -223,8 +223,8 @@ struct ChatRow: Identifiable {
     let kind: Kind
 }
 
-/// The turn in progress: its reads and lookups so far, then its text as it streams, or Thinking… until the first
-/// text arrives; under it Reconnecting to the adapter… while the link comes back, which a read waits for.
+/// The turn in progress: its reads and lookups so far, then its text as it streams, or the pulse mark until the first
+/// text arrives; under it the mark and Reconnecting to the adapter… while the link comes back, which a read waits for.
 struct LiveTurn: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -238,9 +238,12 @@ struct LiveTurn: View {
                 Bubble(text: ai.streaming, owner: false)
             }
             if flow.reconnecting {
-                ProgressView("Reconnecting to the adapter…")
+                HStack {
+                    PulseMark()
+                    Text("Reconnecting to the adapter…")
+                }
             } else if ai.streaming.isEmpty {
-                ProgressView("Thinking…")
+                PulseMark()
             }
         }
     }
