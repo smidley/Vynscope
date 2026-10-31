@@ -201,7 +201,7 @@ func testBackup() -> Backup {
         default: return ["OK"] } }
     var steps: [String] = []
     let check = try await Mechanic(diag: Diag(link: link, log: Log()), car: testCar(), log: Log()).healthCheck { steps.append($0) }
-    #expect(steps == ["Reading fault codes from ACSM_5 …", "Reading fault codes from BDC_BODY3 …", "Reading fault codes from FZD__35 …", "Reading standard OBD codes …", "Reading standard OBD values …"])
+    #expect(steps == ["Reading fault codes · 1 of 3 · ACSM_5", "Reading fault codes · 2 of 3 · BDC_BODY3", "Reading fault codes · 3 of 3 · FZD__35", "Reading standard OBD codes …", "Reading standard OBD values …"])
     #expect(check.modules.map(\.address) == ["01", "40", "56"])
     #expect(check.modules[0].faults == [] && check.modules[1].faults == [HealthCheck.Fault(code: "801E2B", status: "2F")])
     #expect(check.modules[2].faults == nil && check.modules[2].faultRead == "refused (0x11)")
