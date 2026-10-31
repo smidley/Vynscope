@@ -223,8 +223,9 @@ struct ChatRow: Identifiable {
     let kind: Kind
 }
 
-/// The turn in progress: its reads and lookups so far, then its text as it streams, or Thinking… until the first
-/// text arrives; under it Reconnecting to the adapter… while the link comes back, which a read waits for.
+/// The turn in progress: its reads and lookups so far, then its text as it streams, or the pulse mark until
+/// the first text arrives; under it the mark and Reconnecting to the adapter… while the link comes back,
+/// which a read waits for.
 struct LiveTurn: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -238,9 +239,12 @@ struct LiveTurn: View {
                 Bubble(text: ai.streaming, owner: false)
             }
             if flow.reconnecting {
-                ProgressView("Reconnecting to the adapter…")
+                HStack {
+                    PulseMark()
+                    Text("Reconnecting to the adapter…")
+                }
             } else if ai.streaming.isEmpty {
-                ProgressView("Thinking…")
+                PulseMark()
             }
         }
     }
@@ -361,8 +365,9 @@ struct UsageLine: View {
     }
 }
 
-/// The owner's question, Send, and Stop while the mechanic answers.
+/// The owner's question, Send, and Stop while the mechanic answers. Send waits for a car read on a free adapter.
 struct ChatInput: View {
+    @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
     @State private var text = ""
 
@@ -376,16 +381,19 @@ struct ChatInput: View {
                 Button("Stop") { ai.stop() }
             }
             Button("Send", action: send)
-                .disabled(answering || question.isEmpty)
+                .disabled(answering || question.isEmpty || carUnavailable)
         }
         .padding()
     }
 
     private var question: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    /// Sends the question and empties the field; nothing while the mechanic answers.
+    /// The car cannot answer now: the adapter is busy, not set up or given up on, or no car was read.
+    private var carUnavailable: Bool { flow.busy || flow.diag == nil || flow.gaveUp || flow.vin == nil }
+
+    /// Sends the question and empties the field; nothing while the mechanic answers or the car cannot.
     private func send() {
-        guard ai.phase == .ready, !question.isEmpty else { return }
+        guard ai.phase == .ready, !question.isEmpty, !carUnavailable else { return }
         ai.send(question)
         text = ""
     }

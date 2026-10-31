@@ -1,11 +1,9 @@
 import BMWCodingCore
 import SwiftUI
-#if os(macOS)
-import AppKit
-#endif
 
-/// Reads the coding data of every listed module into one backup file.
-struct BackupStep: View {
+/// Reads the coding data of every listed module into one backup file, scanning for the modules first when none is
+/// listed. Back up is unavailable while a scan runs; Cancel stops the run in either stage.
+struct BackupsView: View {
     @Environment(Flow.self) private var flow
     /// The file the last run wrote, read back for the modules it marks complete or partial.
     @State private var saved: Backup? = nil
@@ -13,23 +11,30 @@ struct BackupStep: View {
 
     var body: some View {
         let running = flow.backupTask != nil
+        let blocked = running || flow.discovering || flow.busy || flow.diag == nil || flow.gaveUp || flow.vin == nil
         Form {
             Section {
-                if firstBackup {
+                if firstBackup, !flow.modules.isEmpty, !flow.discovering {
                     Text("""
                         The first backup of this car reads every identifier of every module and takes about an hour. \
                         Keep the ignition on and this device near the car. Later backups take minutes.
                         """)
                 }
                 Button("Back up") { flow.backup(fullRescan: false) }
-                    .disabled(running)
+                    .disabled(blocked)
                 Button("Full rescan") { flow.backup(fullRescan: true) }
-                    .disabled(running)
+                    .disabled(blocked)
+                // Another action's scan; a backup's own shows its progress below.
+                if flow.discovering, !running {
+                    Text("Scanning; Back up when it is done")
+                        .font(.vyn(.footnote))
+                        .foregroundStyle(Color.vynMuted)
+                }
                 if running {
                     Button("Cancel", role: .cancel) { flow.cancelBackup() }
                 }
                 #if os(macOS)
-                Button("Choose folder") { chooseFolder() }
+                Button("Choose folder") { flow.chooseFolder() }
                     .disabled(running)
                 #endif
             } footer: {
@@ -49,17 +54,17 @@ struct BackupStep: View {
                     .foregroundStyle(Color.vynMuted)
                 #endif
             }
+            if running, flow.discovering {
+                Section { ScanProgress() }
+            }
             if running, let progress = flow.progress {
                 Section {
-                    ProgressView(value: overall(progress)) {
-                        if flow.reconnecting {
-                            Text("Reconnecting to the adapter…")
-                        } else {
-                            Text("Module \(progress.moduleIndex + 1) of \(progress.moduleCount)")
-                        }
-                    } currentValueLabel: {
-                        Text("\(progress.didsDone) of \(progress.didsTotal) identifiers")
-                    }
+                    ProgressLine(
+                        value: overall(progress), total: 1,
+                        label: flow.reconnecting
+                            ? "Reconnecting to the adapter…"
+                            : "Backing up · module \(progress.moduleIndex + 1) of \(progress.moduleCount) · "
+                                + "\(progress.didsDone) of \(progress.didsTotal) identifiers")
                 }
             }
             Section("Modules") {
@@ -80,10 +85,16 @@ struct BackupStep: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
+        .connectionLine()
+        .navigationTitle("Backups")
+        .toolbar {
+            ToolbarItem { LogButton() }
+        }
         .task(id: flow.lastBackup) {
             saved = flow.lastBackup == nil ? nil : flow.latestBackup()
             firstBackup = flow.isFirstBackup()
         }
+        .task(id: flow.modules.count) { firstBackup = flow.isFirstBackup() }
     }
 
     /// How far the whole run is: modules done plus the part of the current one.
@@ -97,16 +108,6 @@ struct BackupStep: View {
     private func status(_ address: UInt8) -> ModuleBackup.Status? {
         saved?.modules.first(where: { $0.address == address })?.status
     }
-
-    #if os(macOS)
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        if panel.runModal() == .OK, let url = panel.url { flow.useFolder(url) }
-    }
-    #endif
 }
 
 /// One module of the run: where it stands, and what the saved file says of it: a mark when it is complete, why when

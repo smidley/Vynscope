@@ -1,9 +1,6 @@
 import BMWCodingCore
 import Foundation
 import Observation
-#if os(iOS)
-import UIKit
-#endif
 
 /// The mechanic's settings, kept as JSON in the user defaults: the provider, the model of each, the effort of chat
 /// turns, and the prices the cost estimates use.
@@ -48,7 +45,7 @@ struct AISettings: Codable, Equatable {
     }
 }
 
-/// The state of the AI step: the health check, the conversation about the connected car, the turn in progress, the
+/// The state of the mechanic: the health check, the conversation about the connected car, the turn in progress, the
 /// settings, and the sign-in to ChatGPT. It reaches the car through `flow`, holding `flow.busy` whenever it uses the
 /// adapter. The health check and the turns share one `Diag` and never overlap: each holds `busy`, and `phase` says
 /// which one runs.
@@ -109,6 +106,9 @@ final class AIFlow {
     /// The last turn on OpenAI ended in a refused token that a renewal answered: a refusal in the next one is not
     /// renewed again, it signs out.
     @ObservationIgnored private var refusedAfterRenewal = false
+    /// The last fault read a conversation was given, as `flow.faultReadAt`: the one a health check built it from, or
+    /// the one `handFaults()` sent. No read is given twice.
+    @ObservationIgnored private var handedReadAt: Date?
     private static let welcomeShownKey = "chatgptWelcomeShown"
     private static let responsesURL = URL(string: "https://api.openai.com/v1/responses")!
 
@@ -129,29 +129,46 @@ final class AIFlow {
         }
     }
 
-    /// Opens the picked provider's conversation saved for the connected car or, when there is none and the provider's
-    /// credentials are in, runs the health check. Does nothing without a connected car whose VIN was read, or while a
-    /// check or a turn runs.
-    func enter() async {
-        guard flow.diag != nil, let vin = flow.vin, phase == .idle || phase == .ready else { return }
+    /// Opens the picked provider's conversation saved for the connected car or, when there is none, `runningCheck` is
+    /// set and the provider's credentials are in, runs the health check if the adapter is free, else leaves Run health
+    /// check on offer. Does nothing without a connected car whose VIN was read, after a give-up, or while a check or a
+    /// turn runs.
+    func enter(runningCheck: Bool = true) async {
+        guard flow.diag != nil, !flow.gaveUp, let vin = flow.vin, phase == .idle || phase == .ready else { return }
         if conversation?.vin != vin || conversation?.provider != settings.provider {
             conversation = store.load(vin: vin, provider: settings.provider)
             planLimited = false  // that was another conversation's last turn
         }
         phase = conversation == nil ? .idle : .ready
-        if conversation == nil, hasCredentials { await healthCheck() }
+        if runningCheck, conversation == nil, hasCredentials, !flow.busy { await healthCheck() }
+    }
+
+    /// Hands the open conversation a fresh fault read that no conversation was given yet, as an owner message
+    /// (`faultSummary`) the mechanic answers as a normal turn. Nothing while a check or a turn runs, without a
+    /// conversation, or without a live, idle adapter (no `Diag`, a give-up, `busy`): the read is never sent into a dead
+    /// link or a busy adapter, and stays for the next visit.
+    func handFaults() async {
+        guard phase == .ready, conversation != nil, flow.diag != nil, !flow.gaveUp, !flow.busy,
+              let report = flow.faultReport, report.isFresh(at: .now), flow.faultReadAt != handedReadAt else { return }
+        handedReadAt = flow.faultReadAt
+        send(report.faultSummary)
     }
 
     /// Reads every module's fault codes and standard OBD-II, starts a conversation with the picked provider from what
-    /// it found, and has the mechanic summarize it. Scans for modules first when none is listed. A check that fails
-    /// leaves no conversation, so it can be run again. Reads nothing while no OpenAI model is picked.
+    /// it found, and has the mechanic summarize it. A fresh fault read stands in for reading the car again, except one
+    /// in which nothing answered (an ignition that was off), and a read the check makes is kept as the flow's. Scans
+    /// for modules first when none is listed; a stop of that scan says Stopped. A check that fails leaves no
+    /// conversation, so it can be run again. Reads nothing while no OpenAI model is picked.
     func healthCheck() async {
         error = nil
         planLimited = false
         guard model(for: settings.provider) != nil else { error = "Pick a model in Settings"; return }
         if flow.modules.isEmpty {
-            await flow.discover()
-            guard !flow.modules.isEmpty else { error = flow.error ?? "No module answered the scan"; return }
+            let stopped = await flow.discover()
+            guard !flow.modules.isEmpty else {
+                error = stopped ? "Stopped" : flow.error ?? "No module answered the scan"
+                return
+            }
         }
         let task = Task { await checkAndSummarize() }
         turnTask = task
@@ -247,16 +264,14 @@ final class AIFlow {
         settings.save()
     }
 
-    /// Shows the conversation of the provider just picked for the connected car or, when there is none and the
-    /// provider's credentials are in, runs the health check; on another step than the AI step, entering it runs the
-    /// check instead. Nothing while a check or a turn runs.
-    func switchProvider() async {
+    /// Shows the conversation of the provider just picked for the connected car. With none it runs no health check:
+    /// the owner runs one with Run health check or Ask the mechanic. Nothing while a check or a turn runs.
+    func switchProvider() {
         guard !flow.busy else { return }
         conversation = flow.vin.flatMap { store.load(vin: $0, provider: settings.provider) }
         phase = conversation == nil ? .idle : .ready
         planLimited = false
         error = nil
-        if conversation == nil, hasCredentials, flow.diag != nil, flow.step == .ai { await healthCheck() }
     }
 
     /// Signs in with ChatGPT: starts the listener for the redirect, then opens OpenAI's sign-in page, in the default
@@ -368,7 +383,7 @@ final class AIFlow {
             if chatGPT == nil { error = "Sign in to ChatGPT again in Settings" }
             return
         } catch {
-            guard !Task.isCancelled else { return }  // the sheet closed
+            guard !Task.isCancelled else { return }  // the owner left the Settings tab
             let text = if case SignInError.network(let text) = error { text } else { error.localizedDescription }
             self.error = "Could not load the model list: \(text)"
             return
@@ -384,7 +399,7 @@ final class AIFlow {
         openAIModels = models
         if !openAIModels.contains(where: { $0.id == settings.openAIModel }) {
             settings.openAIModel = openAIModels.first?.id
-            saveSettings()  // the sheet may have closed while the sign-in ran
+            saveSettings()  // the owner may have left the Settings tab while the sign-in ran
         }
     }
 
@@ -425,21 +440,37 @@ final class AIFlow {
     /// `Fetched <url>`.
     static func fetchLine(_ url: String) -> String { "Fetched \(url)" }
 
-    /// The health check proper, then the summary as the conversation's first turn.
+    /// The health check proper, from the flow's fault read while it is fresh and something answered in it, else from a
+    /// read of its own, then the summary as the conversation's first turn.
     private func checkAndSummarize() async {
-        guard case let (diag, car)? = connectedCar() else { error = "Not connected"; return }
+        guard case let (diag, car)? = flow.connectedCar() else { error = "Not connected"; return }
         var opened = false
         await working("Reading the car's fault codes") {
             phase = .checking("Reading fault codes …")
             do {
                 let mechanic = Mechanic(diag: diag, car: car, log: flow.log)
-                let check = try await mechanic.healthCheck { phase = .checking($0) }
+                let check: HealthCheck
+                // An ignition-off read is not reused: it must not block Run health check for ten minutes.
+                if let report = flow.faultReport, report.isFresh(at: .now), !report.nothingAnswered {
+                    check = report
+                } else {
+                    check = try await mechanic.healthCheck { phase = .checking($0) }
+                    flow.faultReport = check
+                    flow.faultReadAt = .now
+                }
+                guard !check.nothingAnswered else {
+                    // An ignition that is off: no conversation, no model turn; Run health check stays on offer.
+                    phase = .idle
+                    self.error = "No module answered the health check. Is the ignition on?"
+                    return
+                }
                 let provider = settings.provider
                 let conversation = Conversation(
                     vin: car.vin, started: .now, model: model(for: provider) ?? "", carContext: check.contextJSON,
                     messages: [Mechanic.ownerMessage(Mechanic.firstQuestion, provider: provider)], provider: provider)
                 try store.save(conversation)
                 self.conversation = conversation
+                handedReadAt = flow.faultReadAt  // its context carries that read
                 opened = true
             } catch {
                 self.conversation = nil
@@ -463,7 +494,7 @@ final class AIFlow {
         defer { phase = .ready }
         // The provider the messages are shaped for, which is the picked one: the picker is off while a turn runs.
         let provider = conversation.provider
-        guard case let (diag, car)? = connectedCar() else { error = "Not connected"; return }
+        guard case let (diag, car)? = flow.connectedCar() else { error = "Not connected"; return }
         guard let model = model(for: provider) else { error = "Pick a model in Settings"; return }
         // Anthropic's key; a turn on the plan asks the sign-in for a token before each request instead.
         guard let key = provider == .anthropic ? Keychain.apiKey() : "" else {
@@ -614,23 +645,7 @@ final class AIFlow {
         guard !flow.busy else { error = "Still working"; return }
         flow.busy = true
         defer { flow.busy = false }
-        let awake = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: reason)
-        defer { ProcessInfo.processInfo.endActivity(awake) }
-        #if os(iOS)
-        UIApplication.shared.isIdleTimerDisabled = true
-        defer { UIApplication.shared.isIdleTimerDisabled = false }
-        #endif
-        await body()
-    }
-
-    /// The `Diag` to the connected car and the car as the mechanic sees it; nil when no car is connected with its VIN
-    /// read.
-    private func connectedCar() -> (diag: Diag, car: MechanicCar)? {
-        guard let diag = flow.diag, let vin = flow.vin, let adapter = flow.adapter else { return nil }
-        let car = MechanicCar(
-            vin: vin, nickname: flow.car?.nickname ?? "", adapter: adapter, modules: flow.modules,
-            latestBackup: flow.latestBackup())
-        return (diag, car)
+        await flow.keepingAwake(reason) { await body() }
     }
 
     private var store: ConversationStore { ConversationStore(directory: flow.appFolder()) }

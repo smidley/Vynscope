@@ -70,6 +70,12 @@ public struct HealthCheck: Codable, Equatable, Sendable {
         public var modules: Int
     }
 
+    /// Whether nothing in the car answered: every module's fault read got no answer and no controller answered the
+    /// standard requests, which is what an ignition that is off looks like. There is nothing for the mechanic to say then.
+    public var nothingAnswered: Bool {
+        modules.allSatisfy { $0.faults == nil && $0.faultRead == "no answer" } && obd == nil
+    }
+
     /// The check as pretty-printed JSON with sorted keys: the same bytes every time, so the prompt caches.
     public var contextJSON: String {
         let encoder = JSONEncoder()
@@ -176,9 +182,9 @@ public final class Mechanic {
     /// modules and says why in `obdError`.
     public func healthCheck(progress: (String) -> Void) async throws -> HealthCheck {
         var modules: [HealthCheck.ModuleHealth] = []
-        for module in car.modules {
+        for (index, module) in car.modules.enumerated() {
             try Task.checkCancellation()  // between two modules, so no answer is left unread
-            progress("Reading fault codes from \(Self.name(of: module)) …")
+            progress("Reading fault codes · \(index + 1) of \(car.modules.count) · \(Self.name(of: module))")
             modules.append(try await health(of: module))
         }
         var obd: HealthCheck.OBDHealth?, obdError: String?

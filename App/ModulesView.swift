@@ -1,20 +1,29 @@
 import BMWCodingCore
 import SwiftUI
 
-/// The modules that answer the scan, listed as they answer; a row opens the module's detail.
-struct ModulesStep: View {
+/// The Programming tab's root: Backups, with the date of the car's newest backup, then the modules that answer the
+/// scan, listed as they answer; a module's row opens its detail. Scan, or Rescan once modules are listed, in the
+/// toolbar.
+struct ModulesView: View {
     @Environment(Flow.self) private var flow
+    /// The car's newest backup, for the Backups row. Read when the screen appears and when the car or
+    /// `Flow.lastBackup` changes, never in `body`, which runs again at every address the scan probes.
+    @State private var latest: Backup? = nil
 
     var body: some View {
         List {
-            if flow.discovering, flow.reconnecting {
-                Text("Reconnecting to the adapter…")
-                    .foregroundStyle(Color.vynMuted)
-            } else if flow.discovering {
-                Text("Scanning · \(flow.modules.count) answered so far")
-                    .foregroundStyle(Color.vynMuted)
-            } else if flow.modules.isEmpty {
-                Button("Scan") { Task { await flow.discover() } }
+            NavigationLink { BackupsView() } label: {
+                LabeledContent("Backups") {
+                    Text(latest.map { "last \($0.date.formatted(.dateTime.month(.abbreviated).day()))" }
+                        ?? "no backup yet")
+                }
+            }
+            if flow.discovering {
+                ScanProgress()
+            }
+            // Where the first modules will be, until one answers.
+            if flow.discovering, flow.modules.isEmpty {
+                SkeletonRows()
             }
             ForEach(flow.modules) { module in
                 NavigationLink(value: module) {
@@ -24,10 +33,22 @@ struct ModulesStep: View {
         }
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
+        .connectionLine()
         .navigationDestination(for: DiscoveredModule.self) { ModuleDetailView(module: $0) }
-        .task {
-            if flow.modules.isEmpty, !flow.discovering { await flow.discover() }
+        .toolbar {
+            ToolbarItem {
+                Button(flow.modules.isEmpty ? "Scan" : "Rescan") { Task { await flow.discover() } }
+                    .disabled(flow.busy || flow.diag == nil || flow.gaveUp || flow.vin == nil)
+            }
         }
+        .task {
+            if flow.modules.isEmpty, !flow.discovering, !flow.busy, flow.diag != nil, flow.vin != nil,
+               flow.vin != flow.autoScannedVIN {
+                flow.autoScannedVIN = flow.vin
+                await flow.discover()
+            }
+        }
+        .task(id: [flow.vin, flow.lastBackup?.path]) { latest = flow.latestBackup() }
     }
 }
 
