@@ -69,6 +69,7 @@ A navigation stack whose root is **Fault codes**; the **Mechanic** screen is pus
 Today's AI step, moved: the health check with its summary as the conversation's first turn, the chat, Try again, the plan states, Stop. Two changes:
 
 - The health check reuses the last fault read when it is less than ten minutes old instead of reading the car again, so Read fault codes then Ask the mechanic costs one read, not two. An older read, or none, reads as today. The ten minutes are a calibration knob.
+- A conversation's stored car context is fixed when its health check ran, and a saved conversation reopens without a new check, so on its own the mechanic would not know the codes the owner just read. Therefore **Ask the mechanic** with a fresh read and an existing conversation sends an owner message carrying the read as text ("I just read the fault codes: …", the report's summary lines) and lets the mechanic answer it as a normal turn; with a fresh read and no conversation it runs the health check from that read (the reuse above); with no read it just opens the screen. One model turn, no change to how conversations are stored. (My call, from the builder check.)
 - A turn keeps running when the owner switches tabs. Stop is the only thing that ends it. Leaving the Mechanic screen no longer stops anything.
 
 The sign-in notice ("Sign in to ChatGPT in Settings…") and the "Not connected" state stay, the latter now the connection line's wording.
@@ -78,7 +79,7 @@ The sign-in notice ("Sign in to ChatGPT in Settings…") and the "Not connected"
 A navigation stack whose root is **Modules**.
 
 - **Modules**: the survey list as today, with the scan's progress bar (address and count) while it runs, skeleton rows before the first module answers, and the module detail pushed from a row. A **Scan** / **Rescan** button in the toolbar.
-- **Backups**: a row at the top of Modules, "Backups · last Oct 28" (or "no backup yet"), pushes today's Backup screen: Back up, Full rescan, the folder, the progress with module and identifier counts, the saved backups, Cancel. The scan-first behaviour when no module is known stays.
+- **Backups**: a row at the top of Modules, "Backups · last Oct 28" (or "no backup yet"), pushes today's Backup screen: Back up, Full rescan, the folder, the progress with module and identifier counts, the saved backups, Cancel. Reached directly, the screen may find no module list, which the wizard's Next used to prevent, so: **Back up with no module known scans first**, in one tap, the progress and Cancel covering both stages and the first-backup notice shown only once the scan is done; a scan that finds no module ends with "No module answered the scan" and saves nothing, so a zero-module backup file is never written; and **Back up is disabled while a scan is running**, with the connection line showing the scan, rather than cancelling it. (My call, from the builder check; this is new work in the flow's backup, not a move.)
 
 ## Settings
 
