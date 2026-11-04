@@ -54,15 +54,17 @@ struct MechanicView: View {
                             ScanProgress()
                         }
                         Button("Run health check") { Task { await ai.healthCheck() } }
+                            .primaryAction()
                             .disabled(flow.busy)
                         if let error = ai.error {
-                            Text(error).foregroundStyle(.red)
+                            Text(error).foregroundStyle(Color.vynRed)
                         }
                     }
                 }
                 .formStyle(.grouped)
             }
         }
+        .quietButtons()
         // Ivory under every state: the forms' own background hidden, the chat on it.
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)

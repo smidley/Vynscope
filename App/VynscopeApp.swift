@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 @main
 struct VynscopeApp: App {
@@ -9,6 +12,14 @@ struct VynscopeApp: App {
         let flow = Flow()
         self.flow = flow
         ai = AIFlow(flow: flow)
+        #if os(iOS)
+        // The navigation bar's title in the app's face: every other word is Manrope, the bar would set its title in
+        // the system's. The Mac's window title stays the system's.
+        let descriptor = UIFontDescriptor(fontAttributes: [
+            .family: "Manrope", .traits: [UIFontDescriptor.TraitKey.weight: UIFont.Weight.semibold],
+        ])
+        UINavigationBar.appearance().titleTextAttributes = [.font: UIFont(descriptor: descriptor, size: 17)]
+        #endif
     }
 
     var body: some Scene {

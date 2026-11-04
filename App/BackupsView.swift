@@ -21,6 +21,7 @@ struct BackupsView: View {
                         """)
                 }
                 Button("Back up") { flow.backup(fullRescan: false) }
+                    .primaryAction()
                     .disabled(blocked)
                 Button("Full rescan") { flow.backup(fullRescan: true) }
                     .disabled(blocked)
@@ -82,6 +83,7 @@ struct BackupsView: View {
                 }
             }
         }
+        .quietButtons()
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
@@ -131,13 +133,13 @@ struct BackupRow: View {
                     let mark = status == .complete ? " ✓" : ""
                     Text("^[\(identifiers) identifier](inflect: true) · \(sizeText(bytes))\(mark)")
                 case .failed?:
-                    Text("failed").foregroundStyle(.red)
+                    Text("failed").foregroundStyle(Color.vynRed)
                 case nil:
                     EmptyView()
                 }
             }
             if case .failed(let why)? = state {
-                Text(why).font(.vyn(.caption)).foregroundStyle(.red)
+                Text(why).font(.vyn(.caption)).foregroundStyle(Color.vynRed)
             }
             if case .partial(let reason)? = status {
                 Text("Partial: \(reason)").font(.vyn(.caption)).foregroundStyle(Color.vynOrangeDark)

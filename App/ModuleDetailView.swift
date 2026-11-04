@@ -23,6 +23,7 @@ struct ModuleDetailView: View {
             SurveySection(address: module.address)
             #endif
         }
+        .quietButtons()
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
@@ -78,7 +79,7 @@ struct CodingDataSection: View {
                     Text("\(did)  \(spaced(hex))").font(.vynMono(.body))
                 }
             } else {
-                Text("Run Backup to read coding data")
+                Text("Back up the car to read its coding data")
             }
         }
     }

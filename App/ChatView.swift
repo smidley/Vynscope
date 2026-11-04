@@ -14,7 +14,7 @@ struct ChatView: View {
             ChatTotal()
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         ChatHistory()
                         LiveTurn()
                         Color.clear.frame(height: 1).id(Self.end)
@@ -32,7 +32,7 @@ struct ChatView: View {
                     Text("Usage limit reached. Review your plan or this app's limit in ChatGPT settings.")
                     HStack {
                         Link("Manage usage", destination: ChatGPTBrowser.usagePage)
-                            .buttonStyle(.borderedProminent)
+                            .primaryAction()
                         Button("Try again") { ai.retry() }
                     }
                 }
@@ -41,7 +41,7 @@ struct ChatView: View {
             } else {
                 if let error = ai.error {
                     Text(error)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Color.vynRed)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
                 }
@@ -103,7 +103,7 @@ struct ChatHistory: View {
                 case .failed(let error):
                     Text("Failed: " + error)
                         .font(.vyn(.caption))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Color.vynRed)
                 case .notice(let text):
                     Text(text)
                         .font(.vyn(.caption))
@@ -250,8 +250,8 @@ struct LiveTurn: View {
     }
 }
 
-/// A message: the owner's on the right in the accent, the mechanic's on the left on paper with a line around it, with
-/// its inline markdown rendered.
+/// A message: the owner's on the right in the darker orange, the mechanic's on the left on paper with a line around
+/// it, with its inline markdown rendered.
 struct Bubble: View {
     let text: String
     let owner: Bool
@@ -260,8 +260,8 @@ struct Bubble: View {
         Text(.init(text))
             .textSelection(.enabled)
             .foregroundStyle(owner ? Color.vynPaper : Color.vynInk)
-            .padding(10)
-            .background(owner ? Color.vynOrange : Color.vynPaper, in: .rect(cornerRadius: 12))
+            .padding(12)
+            .background(owner ? Color.vynOrangeDark : Color.vynPaper, in: .rect(cornerRadius: 12))
             .overlay {
                 if !owner { RoundedRectangle(cornerRadius: 12).strokeBorder(Color.vynLine, lineWidth: 1) }
             }
@@ -312,11 +312,11 @@ struct SuggestedQuestions: View {
     let questions: [String]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(questions, id: \.self) { question in
                 Button(question) { ai.send(question) }
                     .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
+                    .buttonBorderShape(.roundedRectangle(radius: 8))
             }
         }
         .disabled(ai.phase != .ready)
@@ -381,6 +381,7 @@ struct ChatInput: View {
                 Button("Stop") { ai.stop() }
             }
             Button("Send", action: send)
+                .primaryAction()
                 .disabled(answering || question.isEmpty || carUnavailable)
         }
         .padding()

@@ -5,6 +5,25 @@ extension Color {
     static let vynIvory = Color("VynIvory"), vynPaper = Color("VynPaper"), vynInk = Color("VynInk")
     static let vynMuted = Color("VynMuted"), vynLine = Color("VynLine"), vynGreen = Color("VynGreen")
     static let vynOrangeDark = Color("VynOrangeDark"), vynOrange = Color("AccentColor")
+    /// Errors and the active fault, toned to sit in the palette: #D42323 in light, #F26B6B in dark.
+    static let vynRed = Color("VynRed")
+}
+
+/// A screen's one primary action against its quiet ones.
+extension View {
+    /// A filled button in the darker orange with paper text on it, which reads at 4.5 to 1 in both appearances. One
+    /// per screen: Connect, Read fault codes, Scan, Run health check, Back up, Send.
+    func primaryAction() -> some View {
+        buttonStyle(.borderedProminent)
+            .tint(Color.vynOrangeDark)
+            .foregroundStyle(Color.vynPaper)
+    }
+
+    /// The screen's other buttons in ink, so that its primary action is the only orange; a destructive button keeps
+    /// its red and a disabled one its dimming.
+    func quietButtons() -> some View {
+        tint(Color.vynInk)
+    }
 }
 
 /// vynscope.com's typefaces, bundled in `App/Fonts`.

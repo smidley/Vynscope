@@ -11,7 +11,7 @@ struct CarTab: View {
         Form {
             if let error = flow.error {
                 Section {
-                    Text(error).foregroundStyle(.red)
+                    Text(error).foregroundStyle(Color.vynRed)
                 }
             }
             Section {
@@ -45,13 +45,14 @@ struct CarTab: View {
             }
             Section {
                 Button("Connect") { Task { await flow.connect() } }
+                    .primaryAction()
                     .disabled(flow.busy || flow.reconnecting)
                 // A car is known and the link gave up, or an action's error dropped its adapter (`Flow.explain`).
                 // With no car, Connect alone is offered: it reads the car.
                 if flow.vin != nil && (flow.diag == nil || flow.gaveUp) {
                     if flow.error == nil {
                         Text(reconnectReason)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(Color.vynRed)
                     }
                     Button("Reconnect") {
                         Task {
@@ -106,6 +107,7 @@ struct CarTab: View {
                 .foregroundStyle(Color.vynMuted)
             }
         }
+        .quietButtons()
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)

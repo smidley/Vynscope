@@ -105,6 +105,7 @@ struct AISettingsView: View {
             }
             #endif
         }
+        .quietButtons()
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
@@ -187,7 +188,7 @@ struct AISettingsView: View {
     /// `ai.error` in red, when it is set.
     @ViewBuilder private var errorLine: some View {
         if let error = ai.error {
-            Text(error).foregroundStyle(.red)
+            Text(error).foregroundStyle(Color.vynRed)
         }
     }
 
@@ -238,7 +239,7 @@ struct ChatGPTWelcome: View {
                 .multilineTextAlignment(.center)
             Link("Manage usage", destination: ChatGPTBrowser.usagePage)
             Button("Got it") { dismiss() }
-                .buttonStyle(.borderedProminent)
+                .primaryAction()
         }
         .padding(24)
         #if os(macOS)

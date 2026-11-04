@@ -8,7 +8,7 @@ struct ConnectionLine: View {
     @Environment(AIFlow.self) private var ai
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
                 if flow.reconnecting {
                     Text("Reconnecting…")
@@ -39,13 +39,13 @@ struct ConnectionLine: View {
             }
             if let error = flow.error {
                 Text(error)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Color.vynRed)
             }
         }
         .font(.vyn(.footnote))
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
         .background(Color.vynIvory)
     }
 

@@ -79,8 +79,8 @@ extension PulseMark {
     }
 }
 
-/// A wait with a count: what runs and how far, in words, over a bar in the accent; Stop at the end of the words when
-/// `stop` is given.
+/// A wait with a count: what runs and how far, in words, over a bar in the accent on the line color; Stop at the end of
+/// the words when `stop` is given.
 struct ProgressLine: View {
     let value: Double
     let total: Double
@@ -99,8 +99,16 @@ struct ProgressLine: View {
                         .buttonStyle(.borderless)
                 }
             }
-            ProgressView(value: value, total: total)
-                .tint(Color.vynOrange)
+            // The words say how far; the bar is for the eye.
+            GeometryReader { proxy in
+                Capsule().fill(Color.vynLine)
+                    .overlay(alignment: .leading) {
+                        Capsule().fill(Color.vynOrange)
+                            .frame(width: proxy.size.width * (total > 0 ? min(max(value / total, 0), 1) : 0))
+                    }
+            }
+            .frame(height: 4)
+            .accessibilityHidden(true)
         }
     }
 }
@@ -132,9 +140,9 @@ struct SkeletonRows: View {
         ForEach(0..<count, id: \.self) { _ in
             GeometryReader { proxy in
                 let width = proxy.size.width
-                let bars = VStack(alignment: .leading, spacing: 6 * scale) {
-                    Capsule().fill(Color.vynLine).frame(width: width * 0.6, height: 14 * scale)
-                    Capsule().fill(Color.vynLine).frame(width: width * 0.35, height: 10 * scale)
+                let bars = VStack(alignment: .leading, spacing: 8 * scale) {
+                    Capsule().fill(Color.vynLine).frame(width: width * 0.6, height: 16 * scale)
+                    Capsule().fill(Color.vynLine).frame(width: width * 0.35, height: 12 * scale)
                 }
                 bars
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -154,7 +162,7 @@ struct SkeletonRows: View {
                     .mask(alignment: .leading) { bars }
             }
             // The two bars and the space between them.
-            .frame(height: 30 * scale)
+            .frame(height: 36 * scale)
         }
         .accessibilityHidden(true)
     }

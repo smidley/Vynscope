@@ -31,6 +31,7 @@ struct ModulesView: View {
                 }
             }
         }
+        .quietButtons()
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
         .connectionLine()
@@ -38,6 +39,7 @@ struct ModulesView: View {
         .toolbar {
             ToolbarItem {
                 Button(flow.modules.isEmpty ? "Scan" : "Rescan") { Task { await flow.discover() } }
+                    .primaryAction()
                     .disabled(flow.busy || flow.diag == nil || flow.gaveUp || flow.vin == nil)
             }
         }
@@ -52,7 +54,7 @@ struct ModulesView: View {
     }
 }
 
-/// A module's name, or its bare address, and what it does, with a badge when its coding is signed.
+/// A module's name, or its bare address, and what it does, with a note when its coding is signed.
 struct ModuleRow: View {
     let title: String
     let description: String?
@@ -72,8 +74,7 @@ struct ModuleRow: View {
             if signed {
                 Text("signed")
                     .font(.vyn(.caption))
-                    .padding(.horizontal, 6)
-                    .background(.quaternary, in: .capsule)
+                    .foregroundStyle(Color.vynMuted)
             }
         }
     }
