@@ -23,9 +23,11 @@ struct ModuleDetailView: View {
             SurveySection(address: module.address)
             #endif
         }
+        .quietButtons()
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(Color.vynIvory)
+        .connectionLine()
         .navigationTitle(module.title)
         .toolbar {
             ToolbarItem { LogButton() }
@@ -77,7 +79,7 @@ struct CodingDataSection: View {
                     Text("\(did)  \(spaced(hex))").font(.vynMono(.body))
                 }
             } else {
-                Text("Run Backup to read coding data")
+                Text("Back up the car to read its coding data")
             }
         }
     }
@@ -98,9 +100,6 @@ struct SurveySection: View {
         Section {
             Button("Survey identification") { Task { await flow.survey(address) } }
                 .disabled(flow.busy)
-            if let error = flow.error {
-                Text(error).foregroundStyle(.red)
-            }
         } footer: {
             Text("Debug builds only. Logs what the module answers to F100 to F1FF.")
                 .font(.vyn(.footnote))

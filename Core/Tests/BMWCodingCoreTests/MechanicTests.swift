@@ -201,7 +201,7 @@ func testBackup() -> Backup {
         default: return ["OK"] } }
     var steps: [String] = []
     let check = try await Mechanic(diag: Diag(link: link, log: Log()), car: testCar(), log: Log()).healthCheck { steps.append($0) }
-    #expect(steps == ["Reading fault codes from ACSM_5 …", "Reading fault codes from BDC_BODY3 …", "Reading fault codes from FZD__35 …", "Reading standard OBD codes …", "Reading standard OBD values …"])
+    #expect(steps == ["Reading fault codes · 1 of 3 · ACSM_5", "Reading fault codes · 2 of 3 · BDC_BODY3", "Reading fault codes · 3 of 3 · FZD__35", "Reading standard OBD codes …", "Reading standard OBD values …"])
     #expect(check.modules.map(\.address) == ["01", "40", "56"])
     #expect(check.modules[0].faults == [] && check.modules[1].faults == [HealthCheck.Fault(code: "801E2B", status: "2F")])
     #expect(check.modules[2].faults == nil && check.modules[2].faultRead == "refused (0x11)")
@@ -348,4 +348,23 @@ func healthCheckStopsAtTheNextRequestAfterACancel(command: String) async throws 
     #expect(!Mechanic.isOwnerMessage(.object(["type": .string("custom"), "role": .string("user"), "content": .string("hi")]), provider: .openai))
     let reply = JSON.object(["role": .string("assistant"), "content": .array([.object(["type": .string("text"), "text": .string("hi")])])])
     #expect(!Mechanic.isOwnerMessage(reply, provider: .anthropic))
+}
+
+@Test func aCheckWhereNothingAnsweredSaysSo() {
+    let adapter = HealthCheck.Adapter(model: "OBDLink CX", firmware: "5.6")
+    func module(_ address: String, faults: [HealthCheck.Fault]?, faultRead: String?) -> HealthCheck.ModuleHealth {
+        .init(address: address, name: nil, description: nil, signed: false, hardware: nil, software: nil, serial: nil,
+              codingFiles: [], faults: faults, faultRead: faultRead)
+    }
+    var check = HealthCheck(vin: "WBY73AW04RFFAKE19", nickname: "i4", chassis: nil, adapter: adapter,
+                            modules: [module("40", faults: nil, faultRead: "no answer"), module("10", faults: nil, faultRead: "no answer")],
+                            obd: nil, obdError: nil, backup: nil, readAt: "2026-10-29T18:54:00Z")
+    #expect(check.nothingAnswered)
+    check.modules[0] = module("40", faults: [], faultRead: nil)  // one module answered, with no faults
+    #expect(!check.nothingAnswered)
+    check.modules[0] = module("40", faults: nil, faultRead: "refused (0x11)")  // a refusal is an answer
+    #expect(!check.nothingAnswered)
+    check.modules[0] = module("40", faults: nil, faultRead: "no answer")
+    check.obd = HealthCheck.OBDHealth(storedCodes: ["7E8": ["P0A80"]], pendingCodes: [:], supportedPIDs: [:], values: [:])
+    #expect(!check.nothingAnswered)
 }

@@ -75,10 +75,11 @@ private func literal(_ text: String) -> String { String(decoding: JSON.string(te
 /// One Responses stream: `response.created`, the events of `items`, and the terminal event with the items as the
 /// response's `output` and the usage.
 func responsesStream(_ items: [ResponsesItemFixture], end: String = "completed", input: Int = 100, cached: Int = 0,
-                     output: Int = 10, reasoning: Int = 0, incompleteReason: String? = nil) -> String {
+                     output: Int = 10, reasoning: Int = 0, incompleteReason: String? = nil, listsOutput: Bool = true) -> String {
     let outputs = items.map(\.json).joined(separator: ",")
+    let outputField = listsOutput ? #""output":[\#(outputs)],"# : ""  // a ChatGPT-plan stream ended without the list
     let response = { (status: String) in
-        #"{"id":"resp_1","object":"response","model":"gpt-6.1-sol","status":"\#(status)","output":[\#(outputs)],"incomplete_details":\#(incompleteReason.map { #"{"reason":"\#($0)"}"# } ?? "null"),"usage":{"input_tokens":\#(input),"input_tokens_details":{"cached_tokens":\#(cached)},"output_tokens":\#(output),"output_tokens_details":{"reasoning_tokens":\#(reasoning)},"total_tokens":\#(input + output)}}"#
+        #"{"id":"resp_1","object":"response","model":"gpt-6.1-sol","status":"\#(status)",\#(outputField)"incomplete_details":\#(incompleteReason.map { #"{"reason":"\#($0)"}"# } ?? "null"),"usage":{"input_tokens":\#(input),"input_tokens_details":{"cached_tokens":\#(cached)},"output_tokens":\#(output),"output_tokens_details":{"reasoning_tokens":\#(reasoning)},"total_tokens":\#(input + output)}}"#
     }
     return [event("response.created", #"{"type":"response.created","sequence_number":0,"response":\#(response("in_progress"))}"#),
             items.map(\.events).joined(),

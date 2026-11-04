@@ -54,7 +54,7 @@ public struct ResponsesAssembler {
 
     /// Applies the next event of the stream, by the `type` its data names. A `response.output_text.delta` returns
     /// `.text`, a `response.output_item.done` the finished item as a `.block`, and `response.completed` or
-    /// `response.incomplete`, which carry the whole output and the usage, `.finished`; any other event returns `nil`,
+    /// `response.incomplete`, which carry the usage and, when they list it, the whole output (else the streamed items stand), `.finished`; any other event returns `nil`,
     /// an event this does not know among them. A function call whose arguments are not a JSON object reads as
     /// `{}`, and `response.completed` then throws `OpenAIError.badToolInput` with the first such text;
     /// `response.incomplete` does not, its limit cut that text off. `response.failed` and an `error` throw `.planLimit`
@@ -79,7 +79,11 @@ public struct ResponsesAssembler {
             model = response?["model"]?.string ?? ""
             status = response?["status"]?.string ?? ""
             incompleteReason = response?["incomplete_details"]?["reason"]?.string
-            let output = (response?["output"]?.array ?? []).map { readable($0) }
+            // The response's own output list when the event carries one; otherwise what the stream delivered, item
+            // by item (a ChatGPT-plan stream has ended with no list, which must not lose the answer).
+            let streamed = items.sorted { $0.key < $1.key }.map(\.value)
+            let listed = response?["output"]?.array?.map { readable($0) }
+            let output = listed.map { $0.isEmpty ? streamed : $0 } ?? streamed
             self.output = output
             usage = Usage(response?["usage"] ?? .null)
             usage.webSearchRequests = output.filter { $0["type"]?.string == "web_search_call" }.count

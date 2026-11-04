@@ -14,7 +14,7 @@ struct ChatView: View {
             ChatTotal()
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         ChatHistory()
                         LiveTurn()
                         Color.clear.frame(height: 1).id(Self.end)
@@ -32,7 +32,7 @@ struct ChatView: View {
                     Text("Usage limit reached. Review your plan or this app's limit in ChatGPT settings.")
                     HStack {
                         Link("Manage usage", destination: ChatGPTBrowser.usagePage)
-                            .buttonStyle(.borderedProminent)
+                            .primaryAction()
                         Button("Try again") { ai.retry() }
                     }
                 }
@@ -41,7 +41,7 @@ struct ChatView: View {
             } else {
                 if let error = ai.error {
                     Text(error)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Color.vynRed)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
                 }
@@ -103,7 +103,7 @@ struct ChatHistory: View {
                 case .failed(let error):
                     Text("Failed: " + error)
                         .font(.vyn(.caption))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Color.vynRed)
                 case .notice(let text):
                     Text(text)
                         .font(.vyn(.caption))
@@ -223,8 +223,9 @@ struct ChatRow: Identifiable {
     let kind: Kind
 }
 
-/// The turn in progress: its reads and lookups so far, then its text as it streams, or Thinking… until the first
-/// text arrives; under it Reconnecting to the adapter… while the link comes back, which a read waits for.
+/// The turn in progress: its reads and lookups so far, then its text as it streams, or the pulse mark until
+/// the first text arrives; under it the mark and Reconnecting to the adapter… while the link comes back,
+/// which a read waits for.
 struct LiveTurn: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -238,16 +239,19 @@ struct LiveTurn: View {
                 Bubble(text: ai.streaming, owner: false)
             }
             if flow.reconnecting {
-                ProgressView("Reconnecting to the adapter…")
+                HStack {
+                    PulseMark()
+                    Text("Reconnecting to the adapter…")
+                }
             } else if ai.streaming.isEmpty {
-                ProgressView("Thinking…")
+                PulseMark()
             }
         }
     }
 }
 
-/// A message: the owner's on the right in the accent, the mechanic's on the left on paper with a line around it, with
-/// its inline markdown rendered.
+/// A message: the owner's on the right in the darker orange, the mechanic's on the left on paper with a line around
+/// it, with its inline markdown rendered.
 struct Bubble: View {
     let text: String
     let owner: Bool
@@ -256,8 +260,8 @@ struct Bubble: View {
         Text(.init(text))
             .textSelection(.enabled)
             .foregroundStyle(owner ? Color.vynPaper : Color.vynInk)
-            .padding(10)
-            .background(owner ? Color.vynOrange : Color.vynPaper, in: .rect(cornerRadius: 12))
+            .padding(12)
+            .background(owner ? Color.vynOrangeDark : Color.vynPaper, in: .rect(cornerRadius: 12))
             .overlay {
                 if !owner { RoundedRectangle(cornerRadius: 12).strokeBorder(Color.vynLine, lineWidth: 1) }
             }
@@ -308,11 +312,11 @@ struct SuggestedQuestions: View {
     let questions: [String]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(questions, id: \.self) { question in
                 Button(question) { ai.send(question) }
                     .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
+                    .buttonBorderShape(.roundedRectangle(radius: 8))
             }
         }
         .disabled(ai.phase != .ready)
@@ -361,8 +365,9 @@ struct UsageLine: View {
     }
 }
 
-/// The owner's question, Send, and Stop while the mechanic answers.
+/// The owner's question, Send, and Stop while the mechanic answers. Send waits for a car read on a free adapter.
 struct ChatInput: View {
+    @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
     @State private var text = ""
 
@@ -376,16 +381,20 @@ struct ChatInput: View {
                 Button("Stop") { ai.stop() }
             }
             Button("Send", action: send)
-                .disabled(answering || question.isEmpty)
+                .primaryAction()
+                .disabled(answering || question.isEmpty || carUnavailable)
         }
         .padding()
     }
 
     private var question: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    /// Sends the question and empties the field; nothing while the mechanic answers.
+    /// The car cannot answer now: the adapter is busy, not set up or given up on, or no car was read.
+    private var carUnavailable: Bool { flow.busy || flow.diag == nil || flow.gaveUp || flow.vin == nil }
+
+    /// Sends the question and empties the field; nothing while the mechanic answers or the car cannot.
     private func send() {
-        guard ai.phase == .ready, !question.isEmpty else { return }
+        guard ai.phase == .ready, !question.isEmpty, !carUnavailable else { return }
         ai.send(question)
         text = ""
     }
