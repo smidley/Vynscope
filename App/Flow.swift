@@ -17,7 +17,8 @@ enum WriteTestResult {
     /// The check against the backup found a reason not to write; never `.ready`.
     case preparation(WriteTest.Preparation)
     case outcome(WriteTest.Outcome)
-    /// Stopped by the owner or by a link error (`why`) after `done` of `total` identifiers were confirmed.
+    /// Stopped by the owner or by a link error (`why`) after `done` of `total` identifiers were confirmed; `total` is 0
+    /// when it stopped before there were identifiers to write, as for a module no longer listed.
     case stopped(done: Int, total: Int, why: String?)
 }
 
@@ -111,7 +112,8 @@ final class Flow {
     }
 
     /// What runs now, for the connection line: the fault read at its step, else the scan, at the address it is at with
-    /// the modules that answered so far, else the backup, at the module it reads; nil while none runs.
+    /// the modules that answered so far, else the backup, at the module it reads, else the write test, checking its
+    /// module against the backup or at the identifier it writes back; nil while none runs.
     var activity: String? {
         if let readingFaults { return readingFaults }
         if discovering { return "Scanning \(String(format: "%02X", scanned)) of FF · \(modules.count) answered" }
@@ -355,12 +357,17 @@ final class Flow {
         await task.value
     }
 
-    /// Checks `module` against the car's newest complete backup of it with `WriteTest.prepare`, which reads and writes
-    /// nothing, holding `busy` while it reads. When everything agrees `writeTestReady` is set, which shows the
-    /// confirmation; otherwise the result says why not, in `writeTestResults`.
-    func prepareWriteTest(_ module: DiscoveredModule) async {
+    /// Checks the module at `address`, as `modules` lists it, against the car's newest complete backup of it with
+    /// `WriteTest.prepare`, which writes nothing, holding `busy` while it reads. When everything agrees
+    /// `writeTestReady` is set, which shows the confirmation; otherwise the result says why not, in
+    /// `writeTestResults`, as it does when the module is no longer listed.
+    func prepareWriteTest(_ address: UInt8) async {
         guard let diag, let vin, !gaveUp else { error = "Not connected"; return }
         guard !busy else { error = "Still working"; return }
+        guard let module = modules.first(where: { $0.address == address }) else {
+            writeTestResults[address] = .stopped(done: 0, total: 0, why: "The module is no longer listed")
+            return
+        }
         busy = true
         defer { busy = false }
         error = nil
@@ -380,9 +387,10 @@ final class Flow {
         if writeTestReady == nil { writeTestModule = nil }
     }
 
-    /// Writes the module's coding back with `WriteTest.run`, for `ready` as the confirmation holds it, holding
-    /// `busy`, in a task `stopWriteTest()` can stop, with `writeTestProgress` following it. The result is kept in `writeTestResults`: how the run ended, or a
-    /// stop after the last identifier confirmed, or a link error's text.
+    /// Writes the module's coding back with `WriteTest.run`, for `ready` as the confirmation holds it, holding `busy`,
+    /// in a task `stopWriteTest()` can stop, with `writeTestProgress` following it. The result is kept in
+    /// `writeTestResults`: how the run ended, or a stop after the last identifier confirmed, or a link error's text.
+    /// None is kept when the car was forgotten during the run, so no other car's module shows it.
     func confirmWriteTest(_ ready: WriteTest.Ready) async {
         guard let diag, let vin, !gaveUp else { error = "Not connected"; return }
         guard !busy else { error = "Still working"; return }
@@ -411,9 +419,11 @@ final class Flow {
             } catch is CancellationError {
                 result = .stopped(done: writeTestProgress?.done ?? 0, total: ready.identifiers.count, why: nil)
             } catch {
-                result = .stopped(
-                    done: writeTestProgress?.done ?? 0, total: ready.identifiers.count, why: explain(error))
+                let done = writeTestProgress?.done ?? 0
+                let why = explain(error)  // first: it forgets the car when another one answered, which the check sees
+                result = .stopped(done: done, total: ready.identifiers.count, why: why)
             }
+            guard self.vin == vin else { return }  // the car was forgotten, and its results with it
             writeTestResults[module.address] = result
         }
         writeTestTask = task

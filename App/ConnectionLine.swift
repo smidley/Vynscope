@@ -57,8 +57,8 @@ struct ConnectionLine: View {
         return flow.modules.isEmpty ? Text(text) : Text("\(text) · ^[\(flow.modules.count) module](inflect: true)")
     }
 
-    /// What runs now: the flow's fault read, scan or backup, else the health check at its step, else the mechanic's
-    /// answer.
+    /// What runs now: the flow's fault read, scan, backup or write test (checking a module against its backup, or
+    /// writing it back), else the health check at its step, else the mechanic's answer.
     private var activity: String? {
         if let activity = flow.activity { return activity }
         return switch ai.phase {

@@ -28,6 +28,24 @@ struct ModuleDetailView: View {
             SurveySection(address: module.address)
             #endif
         }
+        // On the form rather than the Write test section, which a form that builds its rows lazily may not have built.
+        .confirmationDialog(
+            "Write test on \(module.description ?? module.title)?",
+            isPresented: Binding(
+                get: { flow.writeTestReady?.address == module.address },
+                set: { if !$0 { Task { flow.cancelWriteTest() } } }),
+            presenting: flow.writeTestReady
+        ) { ready in
+            Button("Write test") { Task { await flow.confirmWriteTest(ready) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { ready in
+            Text("""
+                Writes ^[\(ready.identifiers.count) identifier](inflect: true), \(ready.bytes) bytes, back unchanged. \
+                Checked against the backup of \(ready.backupDate.formatted(date: .abbreviated, time: .shortened)). \
+                Battery \(ready.voltage.formatted(.number.precision(.fractionLength(1)))) V. \
+                Park with the ignition on.
+                """)
+        }
         .quietButtons()
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
@@ -96,14 +114,12 @@ struct CodingDataSection: View {
     }
 }
 
-/// The write test of a module it is allowed on: what it does, its button, the confirmation, the progress while it
-/// writes, and how it ended this session.
+/// The write test of a module it is allowed on: what it does, its button, the progress while it writes, and how it
+/// ended this session. The form presents its confirmation.
 struct WriteTestSection: View {
     @Environment(Flow.self) private var flow
     let module: DiscoveredModule
     let hasBackup: Bool
-
-    private var name: String { module.description ?? module.title }
 
     /// Why the button cannot be used now; nil when it can.
     private var unavailable: String? {
@@ -127,30 +143,13 @@ struct WriteTestSection: View {
                     Text("Checking against the backup…")
                 }
             } else {
-                Button("Write test") { Task { await flow.prepareWriteTest(module) } }
+                Button("Write test") { Task { await flow.prepareWriteTest(module.address) } }
                     .disabled(unavailable != nil)
                 if let unavailable { note(unavailable) }
             }
             if let result = flow.writeTestResults[module.address] { WriteTestResultLines(result: result) }
         } header: {
             Text("Write test")
-        }
-        .confirmationDialog(
-            "Write test on \(name)?",
-            isPresented: Binding(
-                get: { flow.writeTestReady?.address == module.address },
-                set: { if !$0 { Task { flow.cancelWriteTest() } } }),
-            presenting: flow.writeTestReady
-        ) { ready in
-            Button("Write test") { Task { await flow.confirmWriteTest(ready) } }
-            Button("Cancel", role: .cancel) {}
-        } message: { ready in
-            Text("""
-                Writes \(ready.identifiers.count) identifiers, \(ready.bytes) bytes, back unchanged. \
-                Checked against the backup of \(ready.backupDate.formatted(date: .abbreviated, time: .shortened)). \
-                Battery \(ready.voltage.formatted(.number.precision(.fractionLength(1)))) V. \
-                Park with the ignition on.
-                """)
         }
     }
 
@@ -168,7 +167,7 @@ struct WriteTestResultLines: View {
         case .preparation(let preparation): preparationLines(preparation)
         case .outcome(let outcome): outcomeLines(outcome)
         case .stopped(let done, let total, let why):
-            line("Stopped after \(done) of \(total)")
+            line(total > 0 ? "Stopped after \(done) of \(total)" : "Stopped")
             if let why { line(why) }
         }
     }
@@ -191,7 +190,10 @@ struct WriteTestResultLines: View {
     private func outcomeLines(_ outcome: WriteTest.Outcome) -> some View {
         switch outcome.end {
         case .accepted:
-            line("Accepted · \(outcome.written) identifiers written back and read back identical", color: .vynGreen)
+            // A localized key, not `line`'s plain string, so that the count is inflected.
+            Text("Accepted · ^[\(outcome.written) identifier](inflect: true) written back and read back identical")
+                .font(.vyn(.footnote))
+                .foregroundStyle(Color.vynGreen)
         case .refused(let identifier, let code):
             line("Refused at \(hex(identifier)) · \(WriteTest.describe(code)) (0x\(String(format: "%02X", code)))")
         case .mismatch(let identifier, let written, let readBack):
