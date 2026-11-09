@@ -341,7 +341,9 @@ public final class Diag {
         do {
             lines = try await send(ISOTP.hexLine(completing), timeout: readTimeout + .seconds(2))
         } catch let error where (error as? LinkError) != .reconnected {
-            try? await expectOK("ATST 32")
+            // The link reports a reconnect once, so one here must still leave the adapter for the next operation to
+            // restore; the first error is the one rethrown.
+            do { try await expectOK("ATST 32") } catch LinkError.reconnected { carUnchecked = true } catch {}
             throw error
         }
         try await expectOK("ATST 32")

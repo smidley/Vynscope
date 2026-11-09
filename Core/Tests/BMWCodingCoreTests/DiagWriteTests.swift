@@ -92,6 +92,18 @@ private func module56(_ answers: [String: [String]]) -> FakeLink {
     await #expect(throws: LinkError.timeout) { try await Diag(link: link, log: Log()).writeDID(0x56, 0x3000, [0xAA]) }
     #expect(link.sent == select56 + ["ATST FF", shortWrite, "ATST 32"])
 }
+@Test func aDropWhileEndingTheLongListenStillRestoresBeforeTheNextOperation() async throws {
+    let read = "56 03 22 30 00 00 00 00"
+    let link = FakeLink { cmd in
+        if cmd == shortWrite { throw LinkError.timeout }
+        return ["OK"] }
+    let diag = Diag(link: link, log: Log())
+    link.dropAfter = 5  // the select's two commands, ATST FF, the write frame, then the ATST 32 after its timeout
+    await #expect(throws: LinkError.timeout) { try await diag.writeDID(0x56, 0x3000, [0xAA]) }
+    _ = try await diag.readDID(0x56, 0x3000)
+    // The link reports a reconnect once: the read restored the adapter and module 56 before it went.
+    #expect(link.sent == select56 + ["ATST FF", shortWrite, "ATST 32"] + setUpCommands + select56 + [read])
+}
 @Test func batteryVoltageReadsATRV() async throws {
     let readings: [(String, Double?)] = [("12.6V", 12.6), ("11.9V", 11.9), ("?", nil)]
     for (answer, volts) in readings {
