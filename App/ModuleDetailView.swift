@@ -141,8 +141,8 @@ struct WriteTestSection: View {
                 get: { flow.writeTestReady?.address == module.address },
                 set: { if !$0 { Task { flow.cancelWriteTest() } } }),
             presenting: flow.writeTestReady
-        ) { _ in
-            Button("Write test") { Task { await flow.confirmWriteTest() } }
+        ) { ready in
+            Button("Write test") { Task { await flow.confirmWriteTest(ready) } }
             Button("Cancel", role: .cancel) {}
         } message: { ready in
             Text("""

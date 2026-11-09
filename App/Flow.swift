@@ -380,14 +380,21 @@ final class Flow {
         if writeTestReady == nil { writeTestModule = nil }
     }
 
-    /// Writes the prepared module's coding back with `WriteTest.run`, holding `busy`, in a task `stopWriteTest()` can
-    /// stop, with `writeTestProgress` following it. The result is kept in `writeTestResults`: how the run ended, or a
+    /// Writes the module's coding back with `WriteTest.run`, for `ready` as the confirmation holds it, holding
+    /// `busy`, in a task `stopWriteTest()` can stop, with `writeTestProgress` following it. The result is kept in `writeTestResults`: how the run ended, or a
     /// stop after the last identifier confirmed, or a link error's text.
-    func confirmWriteTest() async {
+    func confirmWriteTest(_ ready: WriteTest.Ready) async {
         guard let diag, let vin, !gaveUp else { error = "Not connected"; return }
         guard !busy else { error = "Still working"; return }
-        guard let ready = writeTestReady, let module = writeTestModule else { return }
+        guard let module = modules.first(where: { $0.address == ready.address }) else {
+            writeTestReady = nil
+            writeTestModule = nil
+            writeTestResults[ready.address] = .stopped(
+                done: 0, total: ready.identifiers.count, why: "The module is no longer listed")
+            return
+        }
         busy = true
+        writeTestModule = module
         error = nil
         writeTestReady = nil
         writeTestProgress = (0, ready.identifiers.count)
