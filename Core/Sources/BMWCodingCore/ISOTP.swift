@@ -14,15 +14,49 @@ public enum Reassembly: Equatable, Sendable {
 /// sending, `0xF1` when receiving), then the ISO-TP PCI and payload, padded with `0x00` to 8 bytes.
 /// That leaves room for 6 payload bytes in a single frame, 5 in a first frame and 6 in a consecutive frame.
 public enum ISOTP {
-    /// A request that fits one frame. A longer payload would need a first frame, which phase 1 never sends.
+    /// A request that fits one frame. A longer payload goes out as a `firstFrame` then `consecutiveFrames`.
     public static func singleFrame(to target: UInt8, payload: [UInt8]) -> [UInt8] {
         precondition(payload.count <= 6, "a single frame carries at most 6 payload bytes")
         return padded([target, UInt8(payload.count)] + payload)
     }
 
+    /// Opens a request longer than one frame: the 12-bit total length, then the first 5 payload bytes.
+    /// The receiver answers with a flow-control frame before the rest is sent.
+    public static func firstFrame(to target: UInt8, payload: [UInt8]) -> [UInt8] {
+        precondition((7...4095).contains(payload.count), "a first frame carries a payload of 7 to 4095 bytes")
+        return [target, 0x10 | UInt8(payload.count >> 8), UInt8(payload.count & 0xFF)] + payload.prefix(5)
+    }
+
+    /// The rest of a long request, 6 bytes per frame. Each frame's sequence number starts at 1 and wraps
+    /// from `F` back to `0`, so the receiver can tell a lost frame from a repeat.
+    public static func consecutiveFrames(to target: UInt8, payload: [UInt8]) -> [[UInt8]] {
+        let rest = Array(payload.dropFirst(5))
+        return stride(from: 0, to: rest.count, by: 6).enumerated().map { index, start in
+            let sequence = UInt8((index + 1) & 0x0F)
+            return padded([target, 0x20 | sequence] + rest[start..<min(start + 6, rest.count)])
+        }
+    }
+
     /// Lets the sender of a multi-frame response continue: clear to send, no block limit, no delay between frames.
     public static func flowControlFrame(to target: UInt8) -> [UInt8] {
         padded([target, 0x30])
+    }
+
+    /// The receiver's answer to a first frame: whether to continue, and how fast.
+    public struct FlowControl: Equatable, Sendable {
+        /// 0 for clear to send, 1 to wait for another flow-control frame, 2 when the receiver cannot take the message.
+        public let status: UInt8
+        /// Consecutive frames the sender may send before it must wait for another flow-control frame; 0 means no limit.
+        public let blockSize: UInt8
+        /// The least time the sender must leave between consecutive frames, in the ISO-TP encoding.
+        public let separationTime: UInt8
+    }
+
+    /// Reads a flow-control frame as the adapter returns it, address byte first. Nil for any other frame, so
+    /// a late consecutive frame is not taken for an answer.
+    public static func flowControl(_ frame: [UInt8]) -> FlowControl? {
+        guard frame.count >= 4, frame[1] >> 4 == 0x3 else { return nil }
+        return FlowControl(status: frame[1] & 0x0F, blockSize: frame[2], separationTime: frame[3])
     }
 
     /// Joins the frames of one response into its payload, dropping each frame's address and PCI and the
