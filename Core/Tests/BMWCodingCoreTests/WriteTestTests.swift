@@ -48,10 +48,10 @@ private func reference(coding: [String: String] = ["3000": "AABB"], files: [Stri
            modules: [ModuleBackup(address: address, name: "FZD__35", signed: false, identification: .init(),
                                   codingFiles: files, coding: coding, method: .rememberedSet, status: status)])
 }
-/// What `prepare` gives for module 0x56 (or `address`) when it holds `data` and the battery is at `voltage`.
+/// What `prepare` gives on the i4 for module 0x56 (or `address`) when it holds `data` and the battery is at `voltage`.
 private func ready(_ data: [UInt16: [UInt8]] = [0x3000: [0xAA, 0xBB]], address: UInt8 = 0x56,
                    voltage: Double = 12.6) -> WriteTest.Ready {
-    WriteTest.Ready(address: address, identifiers: data.keys.sorted(), data: data,
+    WriteTest.Ready(vin: vin, address: address, identifiers: data.keys.sorted(), data: data,
                     bytes: data.values.reduce(0) { $0 + $1.count }, backupDate: backupDate, voltage: voltage)
 }
 /// 3000 holding AA BB and 3001 holding CC.
@@ -83,8 +83,8 @@ private func wrote(_ link: FakeLink) -> Bool { link.sent.contains { $0.contains(
     let link = i4()
     let backup = reference()
     #expect(try await prepare(link, reference: backup) == .ready(WriteTest.Ready(
-        address: 0x56, identifiers: [0x3000], data: [0x3000: [0xAA, 0xBB]], bytes: 2, backupDate: backup.date,
-        voltage: 12.6)))
+        vin: vin, address: 0x56, identifiers: [0x3000], data: [0x3000: [0xAA, 0xBB]], bytes: 2,
+        backupDate: backup.date, voltage: 12.6)))
     #expect(!wrote(link))
 }
 @Test func prepareStopsOnADifferenceAndSendsNoWrite() async throws {
@@ -116,7 +116,8 @@ private func wrote(_ link: FakeLink) -> Bool { link.sent.contains { $0.contains(
         (reference(coding: [:]), .noBackup),  // nothing to write back
         (reference(vin: "5UXWX7C5XF0K00000"), .noBackup),  // another car's
         (reference(files: []), .backupTooOld),  // made before coding files could be read
-        (reference(files: [newer]), .changed([WriteTest.Difference(what: "coding files", backup: newer, now: roofFile)])),
+        (reference(files: [newer]),
+         .changed([WriteTest.Difference(what: "coding files", backup: newer, now: roofFile)])),
     ]
     for (backup, expected) in cases {
         let link = i4()
@@ -145,7 +146,8 @@ private func wrote(_ link: FakeLink) -> Bool { link.sent.contains { $0.contains(
     #expect(refusing.sent.last == "ATST 32")  // nor the first read back
     // No answer to the write stops the run the same way.
     let silent = i4([write3000: ["NO DATA"]])
-    #expect(try await run(silent, ready(two)) == WriteTest.Outcome(written: 0, total: 2, end: .noAnswer(identifier: 0x3000)))
+    #expect(try await run(silent, ready(two))
+        == WriteTest.Outcome(written: 0, total: 2, end: .noAnswer(identifier: 0x3000)))
     #expect(silent.sent.last == "ATST 32")
 }
 @Test func runStopsOnAReadBackThatDiffers() async throws {
@@ -167,6 +169,17 @@ private func wrote(_ link: FakeLink) -> Bool { link.sent.contains { $0.contains(
             == WriteTest.Outcome(written: 0, total: 1, end: .notEligible))
         #expect(link.sent.isEmpty)
     }
+}
+@Test func runSendsNothingWithAReadyPreparedOnAnotherCar() async throws {
+    guard case .ready(let prepared) = try await prepare(i4(), reference: reference()) else {
+        Issue.record("the i4 agrees with its backup, so prepare should be ready")
+        return
+    }
+    // Another i4, whose roof functions module reports the same coding file: eligible, but not the car of the bytes.
+    let link = i4()
+    #expect(try await run(link, prepared, vin: "WBY73AW04RFFAKE20")
+        == WriteTest.Outcome(written: 0, total: 1, end: .notEligible))
+    #expect(link.sent.isEmpty)
 }
 @Test func runWritesNothingUnderTwelveVoltsOrWithoutTheSession() async throws {
     let low = i4(volts: "11.8V")

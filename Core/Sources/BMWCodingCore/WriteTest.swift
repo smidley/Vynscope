@@ -42,11 +42,12 @@ public enum WriteTest {
         }
     }
 
-    /// What `prepare` found when everything agrees, for the confirmation and for `run`: the identifiers to write
-    /// back, ascending, the data the fresh read gave for each, their size in bytes, the date of the backup they agree
-    /// with and the battery voltage. Only `prepare` makes one outside this package, so `run` writes nothing but a
-    /// module's own bytes.
+    /// What `prepare` found when everything agrees, for the confirmation and for `run`: the car and the module it read,
+    /// the identifiers to write back, ascending, the data the fresh read gave for each, their size in bytes, the date
+    /// of the backup they agree with and the battery voltage. Only `prepare` makes one outside this package, and `run`
+    /// takes one only for the car and module it was made on, so `run` writes nothing but a module's own bytes.
     public struct Ready: Equatable, Sendable {
+        public let vin: String
         public let address: UInt8
         public let identifiers: [UInt16]
         public let data: [UInt16: [UInt8]]
@@ -113,7 +114,7 @@ public enum WriteTest {
         guard differences.isEmpty else { return .changed(differences) }
         let measured = try await diag.batteryVoltage()
         guard let voltage = measured, voltage >= minimumVoltage else { return .lowVoltage(measured) }
-        return .ready(Ready(address: module.address, identifiers: identifiers, data: found,
+        return .ready(Ready(vin: vin, address: module.address, identifiers: identifiers, data: found,
                             bytes: found.values.reduce(0) { $0 + $1.count }, backupDate: reference.date,
                             voltage: voltage))
     }
@@ -138,7 +139,7 @@ public enum WriteTest {
             case noAnswer(identifier: UInt16)
             /// The module refused the extended session, so nothing was written.
             case sessionRefused
-            /// The module is not eligible, or `Ready` was made for another one; nothing was sent.
+            /// The module is not eligible, or `Ready` was made for another module or on another car; nothing was sent.
             case notEligible
             /// At the start of the run the battery was under `minimumVoltage`, or could not be read; nothing was
             /// written.
@@ -149,8 +150,8 @@ public enum WriteTest {
     /// Writes back every identifier of `ready`, in ascending order, with the data the fresh read gave, and reads each
     /// back; the next goes only once the module took the write (`6E` and the identifier) and gave the same bytes back.
     /// The first refusal, missing answer or different read-back ends the run. Sends nothing at all unless `module` is
-    /// eligible and `ready` was made for it; then reads the battery again, selects the module and asks for the
-    /// extended session, held with TesterPresent ahead of any request more than two seconds after the last one, as
+    /// eligible and `ready` was made for it on this car; then reads the battery again, selects the module and asks for
+    /// the extended session, held with TesterPresent ahead of any request more than two seconds after the last one, as
     /// `Coding.read` holds it. `progress` gets how many identifiers are confirmed, and how many there are, after each.
     ///
     /// Each write is sent once. Stop never lands inside an identifier: its write and read-back run in a task the
@@ -172,7 +173,9 @@ public enum WriteTest {
         func outcome(_ end: Outcome.End, written: Int = 0) -> Outcome {
             Outcome(written: written, total: writes.count, end: end)
         }
-        guard isEligible(module, vin: vin), ready.address == address else { return outcome(.notEligible) }
+        guard isEligible(module, vin: vin), ready.vin == vin, ready.address == address else {
+            return outcome(.notEligible)
+        }
         let measured = try await diag.batteryVoltage()
         guard let voltage = measured, voltage >= minimumVoltage else { return outcome(.lowVoltage(measured)) }
         try await diag.select(module: address)
@@ -185,8 +188,8 @@ public enum WriteTest {
         }
         for (written, (did, data)) in writes.enumerated() {
             try Task.checkCancellation()  // between two identifiers only
-            // A task of its own, which the caller's cancellation does not reach: the Bluetooth link's waits end early in
-            // a cancelled task, which would leave an identifier written and not read back.
+            // A task of its own, which the caller's cancellation does not reach: the Bluetooth link's waits end early
+            // in a cancelled task, which would leave an identifier written and not read back.
             let failure = try await Task { () async throws -> Outcome.End? in
                 try await holdSession()
                 let answer = try await diag.writeDID(address, did, data)
