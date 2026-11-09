@@ -23,17 +23,23 @@ private func module(_ address: UInt8 = 0x56, files: [String] = [roofFile], signe
     DiscoveredModule(address: address, name: nil, description: nil, signed: signed, identification: [:],
                      codingFiles: files, hardware: nil, software: nil, answeredIdentification: true)
 }
-/// The i4's module 0x56: the battery at `volts`, 3000 read as the two bytes `reads` (nothing when nil), the session
-/// and TesterPresent granted and the write of AA BB to 3000 taken. `answers` replaces the answer to a command, and
-/// `before` sees every command first; other adapter commands get OK, anything else NO DATA.
-private func i4(volts: String = "12.6V", reads: String? = "AA BB", _ answers: [String: [String]] = [:],
+/// The i4's module 0x56: the battery at `volts`; 3000 read as the two bytes `reads` (nothing when nil) and, once the
+/// write to it has gone, as `readsBack` when one is given; the session and TesterPresent granted and the write of AA BB
+/// to 3000 taken. `answers` replaces the answer to a command, and `before` sees every command first; other adapter
+/// commands get OK, anything else NO DATA.
+private func i4(volts: String = "12.6V", reads: String? = "AA BB", readsBack: String? = nil,
+                _ answers: [String: [String]] = [:],
                 before: @escaping (String) throws -> Void = { _ in }) -> FakeLink {
-    FakeLink { cmd in
+    var writeSent = false
+    return FakeLink { cmd in
         try before(cmd)
+        if cmd == write3000 { writeSent = true }
         if let answer = answers[cmd] { return answer }
         switch cmd {
         case "ATRV": return [volts]
-        case read3000: return reads.map { ["656 F1 05 62 30 00 \($0) 00"] } ?? ["NO DATA"]
+        case read3000:
+            let data = writeSent ? readsBack ?? reads : reads
+            return data.map { ["656 F1 05 62 30 00 \($0) 00"] } ?? ["NO DATA"]
         case session: return ["656 F1 02 50 03 00 00 00 00"]
         case testerPresent: return ["656 F1 02 7E 00 00 00 00 00"]
         case write3000: return ["656 F1 03 6E 30 00 00 00 00"]
@@ -135,8 +141,25 @@ private func wrote(_ link: FakeLink) -> Bool { link.sent.contains { $0.contains(
     var ticks: [[Int]] = []
     #expect(try await run(link, ready()) { ticks.append([$0, $1]) }
         == WriteTest.Outcome(written: 1, total: 1, end: .accepted))
-    #expect(link.sent == ["ATRV"] + select56 + [session, "ATST FF", write3000, "ATST 32", read3000])
+    #expect(link.sent == ["ATRV"] + select56 + [session, read3000, "ATST FF", write3000, "ATST 32", read3000])
     #expect(ticks == [[1, 1]])
+}
+@Test func runStopsWhenAnIdentifierChangedSincePrepare() async throws {
+    // Read again just before its write, 3000 holds AA CC where prepare read AA BB.
+    let changed = i4(reads: "AA CC")
+    #expect(try await run(changed, ready()) == WriteTest.Outcome(
+        written: 0, total: 1, end: .changed(identifier: 0x3000, prepared: [0xAA, 0xBB], now: [0xAA, 0xCC])))
+    #expect(!wrote(changed))
+    // No answer to that read stops the run the same way.
+    let silent = i4(reads: nil)
+    #expect(try await run(silent, ready()) == WriteTest.Outcome(
+        written: 0, total: 1, end: .changed(identifier: 0x3000, prepared: [0xAA, 0xBB], now: nil)))
+    #expect(!wrote(silent))
+    // Each identifier is read again before its own write: 3000 is written back, then 3001 has changed.
+    let second = i4(["56 03 22 30 01 00 00 00": ["656 F1 04 62 30 01 DD 00 00"]])
+    #expect(try await run(second, ready(two)) == WriteTest.Outcome(
+        written: 1, total: 2, end: .changed(identifier: 0x3001, prepared: [0xCC], now: [0xDD])))
+    #expect(second.sent.filter { $0.contains(" 2E ") } == [write3000])
 }
 @Test func runStopsAtTheFirstRefusal() async throws {
     let refusing = i4([write3000: ["656 F1 03 7F 2E 33 00 00 00"]])
@@ -151,7 +174,7 @@ private func wrote(_ link: FakeLink) -> Bool { link.sent.contains { $0.contains(
     #expect(silent.sent.last == "ATST 32")
 }
 @Test func runStopsOnAReadBackThatDiffers() async throws {
-    let link = i4(reads: "AA CC")
+    let link = i4(readsBack: "AA CC")
     #expect(try await run(link, ready(two)) == WriteTest.Outcome(
         written: 0, total: 2, end: .mismatch(identifier: 0x3000, written: [0xAA, 0xBB], readBack: [0xAA, 0xCC])))
     #expect(link.sent.last == read3000)  // the second identifier is never written
@@ -195,7 +218,8 @@ private func wrote(_ link: FakeLink) -> Bool { link.sent.contains { $0.contains(
     // Every request to the module takes three seconds.
     let link = i4(before: { cmd in if cmd.hasPrefix("56 ") { elapsed += .seconds(3) } })
     #expect(try await run(link, ready(), now: { start + elapsed }).end == .accepted)
-    #expect(link.sent.filter { $0.hasPrefix("56 ") } == [session, testerPresent, write3000, testerPresent, read3000])
+    #expect(link.sent.filter { $0.hasPrefix("56 ") }
+        == [session, testerPresent, read3000, testerPresent, write3000, testerPresent, read3000])
 }
 @Test func stopEndsTheRunBetweenTwoIdentifiersNeverInsideOne() async {
     var task: Task<WriteTest.Outcome, any Error>?

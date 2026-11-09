@@ -3,9 +3,10 @@ import Foundation
 /// The write test: on one of two pinned modules of the i4, every coding identifier written back exactly as the module
 /// holds it and read back, to learn whether the module accepts a write at all. It never changes the car: the bytes
 /// written are a fresh read of the module, taken in the same run and agreed with by the newest backup in which the
-/// module is complete, and the run stops at the first identifier that is refused, gets no answer or reads back
-/// differently. `prepare` reads and compares and sends no write; `run` writes, after its own checks. It is the only
-/// public way to send a write, and its bytes are never the caller's: a `Ready` comes from `prepare` alone.
+/// module is complete, each identifier is read again just before its write, and the run stops at the first identifier
+/// that has changed, is refused, gets no answer or reads back differently. `prepare` reads and compares and sends no
+/// write; `run` writes, after its own checks. It is the only public way to send a write, and its bytes are never the
+/// caller's: a `Ready` comes from `prepare` alone.
 public enum WriteTest {
     /// The battery voltage, as the adapter measures it, under which nothing is written.
     public static let minimumVoltage = 12.0
@@ -45,7 +46,8 @@ public enum WriteTest {
     /// What `prepare` found when everything agrees, for the confirmation and for `run`: the car and the module it read,
     /// the identifiers to write back, ascending, the data the fresh read gave for each, their size in bytes, the date
     /// of the backup they agree with and the battery voltage. Only `prepare` makes one outside this package, and `run`
-    /// takes one only for the car and module it was made on, so `run` writes nothing but a module's own bytes.
+    /// takes one only for the car and module it was made on, and writes each identifier only while the module still
+    /// holds its bytes, so `run` writes nothing but a module's own bytes.
     public struct Ready: Equatable, Sendable {
         public let vin: String
         public let address: UInt8
@@ -130,6 +132,9 @@ public enum WriteTest {
         public enum End: Equatable, Sendable {
             /// Every identifier was written back and read back identical.
             case accepted
+            /// Read again just before its write, `identifier` no longer held the bytes `prepare` read: it held `now`
+            /// instead, or gave no data (`now` nil). Nothing was written to it.
+            case changed(identifier: UInt16, prepared: [UInt8], now: [UInt8]?)
             /// The module refused the write of `identifier` with this negative answer code (see `describe`).
             case refused(identifier: UInt16, code: UInt8)
             /// The module took the write of `identifier` but read back other bytes than the ones written: its fault
@@ -148,13 +153,16 @@ public enum WriteTest {
     }
 
     /// Writes back every identifier of `ready`, in ascending order, with the data the fresh read gave, and reads each
-    /// back; the next goes only once the module took the write (`6E` and the identifier) and gave the same bytes back.
-    /// The first refusal, missing answer or different read-back ends the run. Sends nothing at all unless `module` is
-    /// eligible and `ready` was made for it on this car; then reads the battery again, selects the module and asks for
-    /// the extended session, held with TesterPresent ahead of any request more than two seconds after the last one, as
-    /// `Coding.read` holds it. `progress` gets how many identifiers are confirmed, and how many there are, after each.
+    /// back. Each identifier is first read again: it is written only while the module still holds the bytes `prepare`
+    /// read, so a `Ready` gone stale (another coding file version since, or a module recoded by another tool) writes
+    /// nothing. The next identifier goes only once the module took the write (`6E` and the identifier) and gave the
+    /// same bytes back. The first change, refusal, missing answer or different read-back ends the run. Sends nothing
+    /// at all unless `module` is eligible and `ready` was made for it on this car; then reads the battery again,
+    /// selects the module and asks for the extended session, held with TesterPresent ahead of any request more than two
+    /// seconds after the last one, as `Coding.read` holds it. `progress` gets how many identifiers are confirmed, and
+    /// how many there are, after each.
     ///
-    /// Each write is sent once. Stop never lands inside an identifier: its write and read-back run in a task the
+    /// Each write is sent once. Stop never lands inside an identifier: its read, write and read-back run in a task the
     /// caller's cancellation does not reach, and the cancellation is checked between identifiers, where it is thrown
     /// as `CancellationError`; the identifiers confirmed are those `progress` counted. Any other error is rethrown,
     /// and the identifier it came on, which may have been written with the module's own bytes, is not counted.
@@ -191,6 +199,13 @@ public enum WriteTest {
             // A task of its own, which the caller's cancellation does not reach: the Bluetooth link's waits end early
             // in a cancelled task, which would leave an identifier written and not read back.
             let failure = try await Task { () async throws -> Outcome.End? in
+                // Read again just before the write, so that only bytes the module holds now are written back.
+                try await holdSession()
+                switch try await diag.readDID(address, did) {
+                case .positive(data): break
+                case .positive(let held): return .changed(identifier: did, prepared: data, now: held)
+                case .negative, .noResponse: return .changed(identifier: did, prepared: data, now: nil)
+                }
                 try await holdSession()
                 let answer = try await diag.writeDID(address, did, data)
                 guard answer == .positive([0x6E, UInt8(did >> 8), UInt8(truncatingIfNeeded: did)]) else {
