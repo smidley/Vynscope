@@ -2,7 +2,7 @@ import Testing
 @testable import BMWCodingCore
 
 @Test func parsesEntriesAndNames() {
-    let payload: [UInt8] = [0x01, 0x02,
+    let payload: [UInt8] = [0x01, 0x01, 0x00, 0x02,
         0x05, 0x00, 0x00, 0x06, 0xC9, 0x18, 0x02, 0x0D,
         0x01, 0x00, 0x00, 0x08, 0x4D, 0x01, 0x00, 0x03]
     let entries = SVK.parse(payload)
@@ -13,22 +13,22 @@ import Testing
     #expect(entries.hardware == "HWEL_0000084D_001_000_003")
     #expect(entries.software == nil)
 }
-@Test func toleratesTruncation() {
-    #expect(SVK.parse([0x01, 0x01, 0x05, 0x00]).isEmpty)
+private let hwel: [UInt8] = [0x01, 0x00, 0x00, 0x51, 0xC8, 0x01, 0x00, 0x00]
+private let cafd: [UInt8] = [0x05, 0x00, 0x00, 0x51, 0xC9, 0x04, 0x24, 0x02]
+
+@Test func readsTheCountAndTakesTheEntriesFromTheEnd() {
+    let longHeader: [UInt8] = [0x01, 0x01, 0x00, 0x02] + [UInt8](repeating: 0xEE, count: 13)
+    #expect(SVK.parse(longHeader + hwel + cafd).map(\.name)
+        == ["HWEL_000051C8_001_000_000", "CAFD_000051C9_004_036_002"])
+    let shortHeader: [UInt8] = [0x01, 0x01, 0x00, 0x01] + [UInt8](repeating: 0xEE, count: 4)
+    #expect(SVK.parse(shortHeader + cafd).codingFiles == ["CAFD_000051C9_004_036_002"])
+}
+
+@Test func noEntriesWhenTheAnswerIsShorterThanItsCount() {
+    #expect(SVK.parse([0x01, 0x01, 0x00, 0x02] + cafd).isEmpty)
+    #expect(SVK.parse([0x01, 0x01, 0x00, 0x00] + cafd).isEmpty)
+    #expect(SVK.parse([0x01, 0x01, 0x00]).isEmpty)
     #expect(SVK.parse([]).isEmpty)
-}
-@Test func readsOnlyWholeEntries() {
-    let entry: [UInt8] = [0x05, 0x00, 0x00, 0x06, 0xC9, 0x18, 0x02, 0x0D]
-    #expect(SVK.parse([0x01]).isEmpty)  // shorter than the two header bytes
-    #expect(SVK.parse([0x01, 0x01]).isEmpty)
-    #expect(SVK.parse([0x01, 0x01] + entry.dropLast()).isEmpty)  // 7 bytes: one short
-    #expect(SVK.parse([0x01, 0x01] + entry).count == 1)
-    #expect(SVK.parse([0x01, 0x02] + entry + entry.dropLast()).map(\.name) == ["CAFD_000006C9_024_002_013"])
-}
-@Test func ignoresTheEntryCountByte() {
-    let entry: [UInt8] = [0x05, 0x00, 0x00, 0x06, 0xC9, 0x18, 0x02, 0x0D]
-    #expect(SVK.parse([0x01, 0x00] + entry + entry).count == 2)  // the count says none
-    #expect(SVK.parse([0x01, 0x09] + entry).count == 1)  // the count says nine
 }
 @Test func namesEveryKnownClass() {
     let classes: [UInt8] = [0x01, 0x02, 0x05, 0x06, 0x08]

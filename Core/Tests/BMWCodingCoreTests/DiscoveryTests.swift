@@ -24,7 +24,7 @@ import Testing
 @Test func discoversAnsweringModules() async throws {
     let link = FakeLink { cmd in
         switch cmd {
-        case "63 03 22 F1 01 00 00 00": return ["663 F1 10 0D 62 F1 01 01 01", "663 F1 21 05 00 00 06 C9 18", "663 F1 22 02 0D 00 00 00 00"]
+        case "63 03 22 F1 01 00 00 00": return ["663 F1 10 0F 62 F1 01 01 01", "663 F1 21 00 01 05 00 00 06", "663 F1 22 C9 18 02 0D 00 00"]
         case "63 30 00 00 00 00 00 00": return []   // consecutive frames already arrived
         case "40 03 22 F1 01 00 00 00": return ["640 F1 03 7F 22 31 00 00 00"]
         case "56 02 3E 00 00 00 00 00": return ["656 F1 02 7E 00 00 00 00 00"]
@@ -43,8 +43,8 @@ import Testing
     let link = FakeLink { cmd in
         switch cmd {
         case "63 03 22 F1 01 00 00 00":
-            return ["663 F1 10 1D 62 F1 01 01 03", "663 F1 21 01 00 00 08 4D 01", "663 F1 22 00 03 08 00 00 01",
-                    "663 F1 23 A2 01 00 00 05 00", "663 F1 24 00 06 C9 18 02 0D"]
+            return ["663 F1 10 1F 62 F1 01 01 01", "663 F1 21 00 03 01 00 00 08", "663 F1 22 4D 01 00 03 08 00",
+                    "663 F1 23 00 01 A2 01 00 00", "663 F1 24 05 00 00 06 C9 18", "663 F1 25 02 0D 00 00 00 00"]
         case "63 03 22 F1 8C 00 00 00": return ["663 F1 06 62 F1 8C 31 32 33"]
         default: return cmd.hasPrefix("AT") ? ["OK"] : ["NO DATA"] } }
     let diag = Diag(link: link, log: Log())
@@ -54,7 +54,7 @@ import Testing
     }
     #expect(found.count == 1)
     let module = try #require(found.first)
-    #expect(module.identification[0xF101]?.count == 26 && module.identification[0xF18C] == [0x31, 0x32, 0x33])
+    #expect(module.identification[0xF101]?.count == 28 && module.identification[0xF18C] == [0x31, 0x32, 0x33])
     #expect(module.hardware == "HWEL_0000084D_001_000_003" && module.software == "SWFL_000001A2_001_000_000")
     #expect(module.codingFiles == ["CAFD_000006C9_024_002_013"])
     #expect(link.sent.filter { $0.hasPrefix("63 03") } == ["63 03 22 F1 01 00 00 00", "63 03 22 F1 8C 00 00 00"])
