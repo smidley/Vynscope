@@ -18,9 +18,11 @@ public enum Addressing: Equatable, Sendable {
 /// once. The adapter is a single serial channel, so callers make one call at a time; overlapping calls would
 /// mix up their replies. When the link reports a reconnect, an operation restores the adapter (its setup, the car
 /// checked against `expectedVIN`, the addressing it had) and runs again from its start, `restorations` times at
-/// most: its caller sees a slow call, not an error.
+/// most: its caller sees a slow call, not an error. A write is the exception: it is sent once, so a reconnect
+/// during one is rethrown, and the next operation restores the adapter before it runs.
 public final class Diag {
-    /// How long the adapter may take over one vehicle request.
+    /// How long the adapter may take over one vehicle request. The frame that completes a write gets two seconds
+    /// more, for the adapter's longer listen after it.
     public var readTimeout: Duration = .milliseconds(1500)
     /// The addressing the adapter is set up for: `.bmw` after `setUp()`, `.obd` once `obd(_:)` has switched
     /// it, `.bmw` again once `select(module:)` has switched back. It changes only after every command of a
@@ -51,7 +53,8 @@ public final class Diag {
     /// reconnect through to the operation being restored, so a drop during a restoration counts and never nests.
     private var restoring = false
     /// True from the start of a restoration until its car check passed, or found no car to check: a restoration
-    /// that failed part-way leaves it set, and the next operation restores the adapter before it runs.
+    /// that failed part-way leaves it set, as does a write a reconnect cut, which is never run again, and the next
+    /// operation restores the adapter before it runs.
     private var carUnchecked = false
 
     public init(link: CommandLink, log: Log) {
@@ -66,6 +69,13 @@ public final class Diag {
         try await resilient(rawSetUp, rerun: setUpAndCheckCar)
     }
 
+    /// The battery voltage the adapter measures at the OBD socket (`ATRV`): the first line of its answer that reads
+    /// as a number followed by `V`, as `12.6V`; nil when none does.
+    public func batteryVoltage() async throws -> Double? {
+        let lines = try await resilient { try await send("ATRV", timeout: .seconds(2)) }
+        return lines.compactMap { $0.hasSuffix("V") ? Double($0.dropLast()) : nil }.first
+    }
+
     /// Points the adapter at `module`: it passes on only that module's frames and sends its flow control
     /// to it. Does nothing when `module` is already the selected one. After `obd(_:)`, or a switch that failed
     /// part-way, it first sets BMW addressing up again (every command must answer `OK`), which forgets the
@@ -76,8 +86,8 @@ public final class Diag {
 
     /// Sends one UDS request to `module`, which must be set up and selected, and reads its whole answer,
     /// doing the flow-control round trip by hand when the answer has several frames. Throws
-    /// `LinkError.adapterError` as soon as the adapter prints an error line. The four UDS operations below all
-    /// send through here, so this is where they run again after a reconnect.
+    /// `LinkError.adapterError` as soon as the adapter prints an error line. Every UDS operation below but
+    /// `writeDID` sends through here, so this is where they run again after a reconnect.
     func request(_ module: UInt8, _ payload: [UInt8]) async throws -> UDSResult {
         try await resilient {
             let result = try await exchange(module, payload)
@@ -119,6 +129,21 @@ public final class Diag {
     public func enterExtendedSession(_ module: UInt8) async throws -> Bool {
         guard case .positive(let payload) = try await request(module, [0x10, 0x03]) else { return false }
         return payload.starts(with: [0x50, 0x03])
+    }
+
+    /// Writes `data` to identifier `did` of `module` (service `0x2E`), selecting the module first. A positive is the
+    /// whole answer, `6E` and the identifier when the module took the write; a negative is a refusal, never the
+    /// write's response pending (`7F 2E 78`). The write is sent once, by `sendOnce`: never asked again after a
+    /// pending, and never run again after a reconnect, which is rethrown and leaves the adapter for the next
+    /// operation to restore. Internal, so that only the write test sends one.
+    func writeDID(_ module: UInt8, _ did: UInt16, _ data: [UInt8]) async throws -> UDSResult {
+        try await select(module: module)
+        do {
+            return try await sendOnce(module, [0x2E, UInt8(did >> 8), UInt8(truncatingIfNeeded: did)] + data)
+        } catch LinkError.reconnected {
+            carUnchecked = true
+            throw LinkError.reconnected
+        }
     }
 
     /// Sends one standard OBD-II request to every controller at once and returns each one's complete answer by
@@ -171,7 +196,8 @@ public final class Diag {
                     log.note("the link reconnected: restoring the adapter, then running the cut operation again "
                         + "(\(attempt) of \(Self.restorations))")
                 } else if carUnchecked && !restoring {
-                    log.note("the last restoration did not finish: restoring the adapter before this operation")
+                    log.note("the adapter was not restored after the last reconnect: "
+                        + "restoring it before this operation")
                 } else {
                     return try await operation()
                 }
@@ -270,11 +296,7 @@ public final class Diag {
         }
         switch message {
         case .complete(let bytes):
-            guard let service = bytes.first else { return noResponse(module, "empty answer") }
-            guard service == 0x7F else { return .positive(bytes) }
-            return bytes.count >= 3
-                ? .negative(bytes[2])
-                : noResponse(module, "negative answer cut short: \(ISOTP.hexLine(bytes))")
+            return result(of: bytes, from: module)
         case .needFlowControl(let expected):
             return noResponse(module, "only the first frame of \(expected) bytes arrived, even after flow control")
         case .incomplete(let received, let expected):
@@ -284,9 +306,62 @@ public final class Diag {
         }
     }
 
-    /// What the frames `module` sent in `lines` add up to. Other lines (text, other ids, NO DATA) are
-    /// skipped; an adapter error line throws.
+    /// One request sent once, and its final answer: a single frame, or a first frame and then, once the module's
+    /// flow control clears it, every consecutive frame. The frame that completes the request goes out under the
+    /// adapter's long listen (`ATST FF`, about a second after the frame and after each frame it receives), so the
+    /// final answer that follows a response pending arrives in the same lines; `ATST 32` ends the long listen
+    /// whatever came back, except after a reconnect, whose restoration ends it. Nothing is ever sent again.
+    private func sendOnce(_ module: UInt8, _ payload: [UInt8]) async throws -> UDSResult {
+        var outgoing = payload.count <= 6
+            ? [ISOTP.singleFrame(to: module, payload: payload)]
+            : [ISOTP.firstFrame(to: module, payload: payload)] + ISOTP.consecutiveFrames(to: module, payload: payload)
+        let completing = outgoing.removeLast()
+        var blockSize = 0  // the first flow control's, which holds for the whole request
+        // ponytail: no delay between consecutive frames: each send waits out the adapter's 200 ms listen (`ATST 32`),
+        // longer than the 127 ms a module may ask. A faster send would have to honour the separation time.
+        for (index, frame) in outgoing.enumerated() {
+            let lines = try await send(ISOTP.hexLine(frame), timeout: readTimeout)
+            let flowControl = try frames(in: lines, from: module).compactMap(ISOTP.flowControl).first
+            // After the first frame, and after the last frame of each block, the next waits for a clear to send.
+            guard index == 0 || (blockSize > 0 && index % blockSize == 0) else { continue }
+            // ponytail: a wait (status 1) ends the write like an overflow (2): the adapter listens only 200 ms after
+            // a frame, so a later clear to send would be missed anyway. Wait for the next flow control if a module
+            // ever sends a wait.
+            guard let flowControl, flowControl.status == 0 else {
+                let why = flowControl.map { "flow control status \($0.status)" } ?? "no flow control"
+                return noResponse(module, "the write stopped after frame \(index + 1) of \(outgoing.count + 1), \(why)")
+            }
+            if index == 0 { blockSize = Int(flowControl.blockSize) }
+        }
+        // ponytail: the wait for the final answer ends a second after the module's last frame, or at the timeout; a
+        // module that stays pending longer reads as no answer. Listen on without sending (the adapter's monitor mode)
+        // if one turns up.
+        try await expectOK("ATST FF")
+        let lines: [String]
+        do {
+            lines = try await send(ISOTP.hexLine(completing), timeout: readTimeout + .seconds(2))
+        } catch let error where (error as? LinkError) != .reconnected {
+            try? await expectOK("ATST 32")
+            throw error
+        }
+        try await expectOK("ATST 32")
+        // The answer is the module's first single frame that is not a response pending.
+        for frame in try frames(in: lines, from: module) {
+            guard case .complete(let bytes) = ISOTP.reassemble([frame]), bytes != [0x7F, 0x2E, 0x78] else { continue }
+            return result(of: bytes, from: module)
+        }
+        return noResponse(module, "no final answer to the write, received "
+            + (lines.isEmpty ? "nothing" : lines.joined(separator: " | ")))
+    }
+
+    /// What the frames `module` sent in `lines` add up to.
     private func assemble(_ lines: [String], from module: UInt8) throws -> Reassembly {
+        ISOTP.reassemble(try frames(in: lines, from: module))
+    }
+
+    /// The frames `module` sent in `lines`, address byte first. Other lines (text, other ids, NO DATA) are
+    /// skipped; an adapter error line throws.
+    private func frames(in lines: [String], from module: UInt8) throws -> [[UInt8]] {
         var frames: [[UInt8]] = []
         for line in lines {
             switch ELM.parse(line) {
@@ -295,7 +370,17 @@ public final class Diag {
             case .frame, .text, .noData: break
             }
         }
-        return ISOTP.reassemble(frames)
+        return frames
+    }
+
+    /// What a whole answer from `module` says: the positive itself, a negative's code, or no response when it is
+    /// empty or a negative cut short.
+    private func result(of bytes: [UInt8], from module: UInt8) -> UDSResult {
+        guard let service = bytes.first else { return noResponse(module, "empty answer") }
+        guard service == 0x7F else { return .positive(bytes) }
+        return bytes.count >= 3
+            ? .negative(bytes[2])
+            : noResponse(module, "negative answer cut short: \(ISOTP.hexLine(bytes))")
     }
 
     /// The CAN id `module` answers on.
