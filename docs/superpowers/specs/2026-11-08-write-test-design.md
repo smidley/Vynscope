@@ -35,9 +35,11 @@ The write test answers it without changing anything on the car. It writes a modu
 ## Constraints
 
 - The wire allow-list after this step: adapter setup and the adapter's own battery-voltage reading; `0x22`; `0x19 0x02` with mask `FF`; `0x3E`; `0x10 0x03`; the standard OBD modes 01, 03, 07 and 09 on `7DF`; and WriteDataByIdentifier (`0x2E`), sent by the write test only, under every rule in this document. Still never sent: `0x11`, `0x14`, `0x27`, `0x31`, any `0x10` other than `0x03`, and `0x2E` from anywhere else.
-- Eligible modules: on the i4 (VIN prefix `WBY73`), the roof functions module at `0x56` (`FZD__35`) and the climate module at `0x78` (`IHKA_PRO2`). Nothing else on the i4 and nothing on any other car. Adding a module is a code change Scott decides, after the earlier ones have passed in the car.
+- Eligible modules: on the i4 (VIN prefix `WBY73`), the roof functions module at `0x56` while it reports coding file `00001D92`, and the climate module at `0x78` while it reports coding file `000051C9`, any version. Nothing else on the i4 and nothing on any other car. Adding a module is a code change Scott decides, after the earlier ones have passed in the car.
+- The coding-file pin is what names the two modules; the names in the app's module table are seeds the car never confirmed. Scott's G20 cheat sheet lists `00001D92` for the roof function centre and `000051C9` for the climate unit, and the i4's modules at `0x56` and `0x78` reported exactly those files in the scan of 2026-11-04. A module at either address that reports anything else is not eligible.
 - The Core package enforces eligibility itself and refuses any other module; a missing button is not the guard. A module that `ModuleTable.isSigned` reports as signed is refused even if it is ever added to the eligible list.
-- The bytes written come from one source: a fresh read of the module taken in the same run, which must agree with the module's entry in the newest earlier backup where that module is complete. Agreement means the same coding files, the same set of identifiers and the same bytes for each. Any difference, a partial fresh read, or no such backup means nothing is written.
+- The bytes written come from one source: a fresh read of the module taken in the same run, which must agree with the module's entry in the newest backup where that module is complete. Agreement means the same coding files, the same set of identifiers and the same bytes for each. Any difference, a missing identifier, or no such backup means nothing is written.
+- The fresh read is never saved as a backup file. The reference already holds the same bytes, so every backup file stays one that Back up made, and the newest backup, which other screens and the mechanic read, stays a whole-car backup.
 - No public API sends a write with bytes the caller chooses. The write request stays internal to the Core package; the only public way to send one is the write test.
 - A write is sent once. A link drop, a timeout, a response pending (`0x78`) that is not resolved in time, or a busy answer (`0x21`) ends the test with what was confirmed so far. The existing re-ask after `0x78`, which sends the request again, and the existing rerun of an operation after a reconnect, must not apply to writes.
 - Tests talk to the fake link only. No test touches the car, Anthropic or OpenAI. The real VIN appears nowhere in the repository; tests use `WBY73AW04RFFAKE19`. No car log or backup file is committed.
@@ -53,13 +55,21 @@ The write test answers it without changing anything on the car. It writes a modu
 ## Decided: the run
 
 1. **Reference.** The newest backup in which the module is complete. Without one the run does not start.
-2. **Fresh read.** A one-module backup of the module through the existing backup run, which reads its remembered identifiers in seconds. It is saved as a backup file like any other. A partial read stops the run.
-3. **Compare.** Coding files, identifiers and bytes against the reference. Any difference stops the run and lists the differing identifiers with both values, as "changed since the backup". Nothing is written.
+2. **Fresh read.** The coding read asks the module for exactly the reference's identifiers, which takes seconds. The result is held for the run only.
+3. **Compare.** The coding files the module reported in this session's scan, then every identifier and its bytes, against the reference. Any difference, or an identifier that did not answer, stops the run and lists what differs with both values, as "changed since the backup". Nothing is written.
 4. **Voltage.** Read from the adapter. Under 12.0 V, or unreadable, stops the run.
 5. **Confirm.** The confirmation above. Cancel ends the run with nothing sent past the reads.
 6. **Session.** The extended session (`0x10 0x03`), held with TesterPresent whenever two seconds pass, as the coding read does. A refusal stops the run as "refused the extended session".
 7. **Write and read back.** For each identifier, in ascending order: write it (`0x2E`, the identifier, the fresh bytes); the answer must be positive and echo the identifier (`6E` and the identifier). Then read it (`0x22`) and compare with the bytes written. The next identifier goes only when both hold. The first refusal, missing answer or mismatch ends the run.
 8. **Result** as described above.
+
+## Decided: the identification parse
+
+The write test compares coding files and pins its two modules by coding file, so the app has to read them right, and today it does not. The installed-software answer (`F101`) starts with a header before its 8-byte entries, and the parser assumes the header is two bytes. In the scan of 2026-11-04 the header was 17 bytes on 20 modules and 8 bytes on 6, so every module read as having no coding files and the hardware and software fields showed bytes from the header.
+
+The rule that fits all 26 answers: the entry count is the two bytes after the first two, big-endian, and the entries are the answer's last count × 8 bytes, each `[class][id, 4 bytes][main][sub][patch]` as before. An answer shorter than four bytes plus its entries has no entries. This fix comes first in the plan. Its tests use the two real answers' shapes with made-up ids where the ids do not matter.
+
+What changes for Scott: module screens show coding files, hardware and software for the first time. Remembered identifier sets are keyed by coding files, so the first backup after the fix sweeps every module in full once, about an hour. A backup made before the fix records no coding files, so it can never serve as a write test's reference; the first backup after the fix is the one to use.
 
 ## Decided: sending more than one frame
 
@@ -79,10 +89,12 @@ A write carries the identifier's whole data. With BMW's addressing a single fram
 - Two eligible modules instead of every module off the signed list. On an electric car the unnamed modules include the battery, drive and charging electronics, and the crash-safety module holds the airbags. The list widens one module at a time, by Scott's decision.
 - The 12.0 V floor.
 - Results last the session; the log keeps them after that.
+- After the builder check: the fresh read is held in memory instead of saved, the two modules are pinned by coding file, and the identification parse is fixed first, because the write test cannot work without it.
 
 ## What Scott verifies in the car
 
-- A full backup of the i4 completes, with roof functions and climate complete.
+- Module screens now list coding files: roof functions shows a `CAFD_00001D92` entry, climate a `CAFD_000051C9` entry.
+- A full backup of the i4 completes after the update, with roof functions and climate complete. It sweeps every module in full, about an hour.
 - Fault codes for both modules, read before the test.
 - Write test on roof functions: a result is shown, and the log shows only adapter setup, the voltage reading, the reads, `0x10 0x03`, `0x3E` and the writes, each write sent once.
 - Ignition off and on again: the interior lights, the sunroof if fitted and the rest of the roof console behave as before, and its fault codes show nothing new.
