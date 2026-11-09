@@ -34,6 +34,8 @@ struct ModuleDetailView: View {
             isPresented: Binding(
                 get: { flow.writeTestReady?.address == module.address },
                 set: { if !$0 { Task { flow.cancelWriteTest() } } }),
+            // Visible, or the iPhone hides it, and the title is what names the module.
+            titleVisibility: .visible,
             presenting: flow.writeTestReady
         ) { ready in
             Button("Write test") { Task { await flow.confirmWriteTest(ready) } }
