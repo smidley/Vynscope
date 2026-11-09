@@ -368,6 +368,17 @@ func answersTooShortToReadAreNoResponseWithANote(answer: String) async throws {
     let link = FakeLink { cmd in cmd == "01 00" ? ["7E8 00"] : ["OK"] }
     #expect(try await Diag(link: link, log: Log()).obd([0x01, 0x00]) == [0x7E8: []])
 }
+@Test func obdSendsNothingButTheReadOnlyModes() async throws {
+    // A write, a clear of the emission codes, a clear of the stored faults, and nothing at all.
+    for payload: [UInt8] in [[0x2E, 0x30, 0x00], [0x04], [0x14, 0xFF, 0xFF, 0xFF], []] {
+        let link = FakeLink { _ in ["OK"] }
+        await #expect(throws: DiagError.notAllowed(payload)) { try await Diag(link: link, log: Log()).obd(payload) }
+        #expect(link.sent.isEmpty)  // not even the switch to OBD addressing
+    }
+    let link = FakeLink { cmd in cmd == "01 00" ? ["7E8 06 41 00 BE 3E B8 11"] : ["OK"] }
+    #expect(try await Diag(link: link, log: Log()).obd([0x01, 0x00]) == [0x7E8: [0x41, 0x00, 0xBE, 0x3E, 0xB8, 0x11]])
+    #expect(link.sent == ELM.obdSequence + ["01 00"])
+}
 
 // A reconnect: the adapter restored and the cut operation run again.
 

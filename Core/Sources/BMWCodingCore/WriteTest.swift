@@ -132,15 +132,16 @@ public enum WriteTest {
         public enum End: Equatable, Sendable {
             /// Every identifier was written back and read back identical.
             case accepted
-            /// Read again just before its write, `identifier` no longer held the bytes `prepare` read: it held `now`
-            /// instead, or gave no data (`now` nil). Nothing was written to it.
-            case changed(identifier: UInt16, prepared: [UInt8], now: [UInt8]?)
+            /// Read again just before its write, `identifier` held `now` instead of the bytes `prepare` read. Nothing
+            /// was written to it.
+            case changed(identifier: UInt16, prepared: [UInt8], now: [UInt8])
             /// The module refused the write of `identifier` with this negative answer code (see `describe`).
             case refused(identifier: UInt16, code: UInt8)
             /// The module took the write of `identifier` but read back other bytes than the ones written: its fault
             /// codes are the next thing to read.
             case mismatch(identifier: UInt16, written: [UInt8], readBack: [UInt8])
-            /// The write of `identifier`, or its read-back, got no usable answer.
+            /// `identifier` got no usable answer: to its write, to its read-back, or to its read just before the write,
+            /// a negative answer included, in which case nothing was written to it.
             case noAnswer(identifier: UInt16)
             /// The module refused the extended session, so nothing was written.
             case sessionRefused
@@ -164,8 +165,11 @@ public enum WriteTest {
     ///
     /// Each write is sent once. Stop never lands inside an identifier: its read, write and read-back run in a task the
     /// caller's cancellation does not reach, and the cancellation is checked between identifiers, where it is thrown
-    /// as `CancellationError`; the identifiers confirmed are those `progress` counted. Any other error is rethrown,
-    /// and the identifier it came on, which may have been written with the module's own bytes, is not counted.
+    /// as `CancellationError`; the identifiers confirmed are those `progress` counted. A link that drops during a read
+    /// or a TesterPresent is restored by `diag`, which sends that request again, but the module has most likely left
+    /// the extended session meanwhile: after such a restoration the next write is not sent, and the run throws
+    /// `LinkError.reconnected`. Any other error is rethrown, and the identifier it came on, which may have been written
+    /// with the module's own bytes, is not counted.
     public static func run(diag: Diag, module: DiscoveredModule, vin: String, ready: Ready,
                            progress: @escaping (Int, Int) -> Void) async throws -> Outcome {
         try await run(diag: diag, module: module, vin: vin, ready: ready, now: { ContinuousClock.now },
@@ -189,6 +193,7 @@ public enum WriteTest {
         try await diag.select(module: address)
         var lastRequest = now()  // the session request holds off TesterPresent like any other
         guard try await diag.enterExtendedSession(address) else { return outcome(.sessionRefused) }
+        let restorations = diag.restorationsBegun  // any later one means the session was most likely lost
         // TesterPresent ahead of a request that comes more than two seconds after the last one; its answer is ignored.
         func holdSession() async throws {
             if now() - lastRequest > .seconds(2) { _ = try await diag.testerPresent(address) }
@@ -204,9 +209,13 @@ public enum WriteTest {
                 switch try await diag.readDID(address, did) {
                 case .positive(data): break
                 case .positive(let held): return .changed(identifier: did, prepared: data, now: held)
-                case .negative, .noResponse: return .changed(identifier: did, prepared: data, now: nil)
+                case .negative, .noResponse: return .noAnswer(identifier: did)
                 }
                 try await holdSession()
+                // A restoration since the session was granted (a dropped link, restored inside one of the requests
+                // above) ends the run: a module out of its session would refuse the write for that, not because it
+                // refuses writes.
+                guard diag.restorationsBegun == restorations else { throw LinkError.reconnected }
                 let answer = try await diag.writeDID(address, did, data)
                 guard answer == .positive([0x6E, UInt8(did >> 8), UInt8(truncatingIfNeeded: did)]) else {
                     if case .negative(let code) = answer { return .refused(identifier: did, code: code) }

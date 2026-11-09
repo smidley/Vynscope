@@ -56,6 +56,10 @@ public final class Diag {
     /// that failed part-way leaves it set, as does a write a reconnect cut, which is never run again, and the next
     /// operation restores the adapter before it runs.
     private var carUnchecked = false
+    /// How many restorations have begun since this `Diag` was made. The write test reads it before each write: a
+    /// module most likely leaves its extended session while the adapter is restored, so no write may follow a
+    /// restoration the write test did not see.
+    private(set) var restorationsBegun = 0
 
     public init(link: CommandLink, log: Log) {
         self.link = link
@@ -151,9 +155,13 @@ public final class Diag {
     /// first when it is not there (every command must answer `OK`), which undoes a previous `select`: a module
     /// read after this must be selected again. An id whose message did not finish, or that answered negatively,
     /// is left out and noted; `NO DATA` gives an empty dictionary. Throws `LinkError.adapterError` as soon as
-    /// the adapter prints an error line. The payload is sent as given: the caller enforces the read-only
-    /// allow-list.
+    /// the adapter prints an error line. Only the reads of the allow-list go out: a payload whose mode, its first
+    /// byte, is not 01, 03, 07 or 09, or an empty one, throws `DiagError.notAllowed` before anything is sent, so a
+    /// caller's bad input, such as a model's, can never reach every controller.
     public func obd(_ payload: [UInt8]) async throws -> [UInt16: [UInt8]] {
+        guard let mode = payload.first, [0x01, 0x03, 0x07, 0x09].contains(mode) else {
+            throw DiagError.notAllowed(payload)
+        }
         let lines = try await resilient {
             try await rawSwitchToOBD()
             return try await send(ISOTP.hexLine(payload), timeout: readTimeout)
@@ -185,7 +193,8 @@ public final class Diag {
     /// Runs `operation`; when the link reports a reconnect, restores the adapter and runs it again from its start
     /// (or `rerun` in its place), `restorations` times at most, then fails with `DiagError.keptDropping`. A
     /// reconnect during a restoration ends that restoration and counts as the next one. An operation that begins
-    /// after a restoration failed part-way restores first, so it never runs against a car that was not checked.
+    /// after a restoration failed part-way, or after a write that a reconnect cut, restores first, so it never runs
+    /// against an adapter that was not restored or a car that was not checked.
     private func resilient<T>(
         _ operation: () async throws -> T, rerun: (() async throws -> T)? = nil
     ) async throws -> T {
@@ -226,6 +235,7 @@ public final class Diag {
     /// while no module answers or the bus reports an error, so the work never goes on against another car or one
     /// that was not checked. Any other error of the read ends the restoration.
     private func setUpAndCheckCar() async throws -> AdapterInfo {
+        restorationsBegun += 1
         carUnchecked = true  // until the check below passes
         restoring = true
         defer { restoring = false }

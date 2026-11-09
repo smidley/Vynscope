@@ -610,6 +610,7 @@ final class Flow {
         case DiagError.differentCar: "A different car answered after the reconnect"
         case DiagError.carSilent: "The car did not answer after the adapter reconnected. Is the ignition on?"
         case DiagError.keptDropping: "The adapter kept dropping. Reconnect when it is in range."
+        case DiagError.notAllowed: "Not sent: only the standard OBD reads, modes 01, 03, 07 and 09, go to every module"
         case VINError.noVIN: "No module answered with a VIN. Is the ignition on?"
         default: error.localizedDescription
         }

@@ -150,11 +150,14 @@ private func wrote(_ link: FakeLink) -> Bool { link.sent.contains { $0.contains(
     #expect(try await run(changed, ready()) == WriteTest.Outcome(
         written: 0, total: 1, end: .changed(identifier: 0x3000, prepared: [0xAA, 0xBB], now: [0xAA, 0xCC])))
     #expect(!wrote(changed))
-    // No answer to that read stops the run the same way.
+    // A read that gets no answer, or a negative one, stops the run as no answer, with nothing written either.
+    let noAnswer = WriteTest.Outcome(written: 0, total: 1, end: .noAnswer(identifier: 0x3000))
     let silent = i4(reads: nil)
-    #expect(try await run(silent, ready()) == WriteTest.Outcome(
-        written: 0, total: 1, end: .changed(identifier: 0x3000, prepared: [0xAA, 0xBB], now: nil)))
+    #expect(try await run(silent, ready()) == noAnswer)
     #expect(!wrote(silent))
+    let refusing = i4([read3000: ["656 F1 03 7F 22 31 00 00 00"]])
+    #expect(try await run(refusing, ready()) == noAnswer)
+    #expect(!wrote(refusing))
     // Each identifier is read again before its own write: 3000 is written back, then 3001 has changed.
     let second = i4(["56 03 22 30 01 00 00 00": ["656 F1 04 62 30 01 DD 00 00"]])
     #expect(try await run(second, ready(two)) == WriteTest.Outcome(
@@ -183,6 +186,7 @@ private func wrote(_ link: FakeLink) -> Bool { link.sent.contains { $0.contains(
     let cases: [(DiscoveredModule, String, WriteTest.Ready)] = [
         (module(0x40), vin, ready(address: 0x40)),  // the body controller, signed, with the roof file
         (module(files: ["CAFD_00000001_001_000_000"]), vin, ready()),  // another coding file
+        (module(signed: true), vin, ready()),  // signed as discovery saw it, though pinned
         (module(), "5UXWX7C5XF0K00000", ready()),  // another car
         (module(), vin, ready(address: 0x78)),  // prepared for another module
     ]
@@ -232,6 +236,24 @@ private func wrote(_ link: FakeLink) -> Bool { link.sent.contains { $0.contains(
     await #expect(throws: CancellationError.self) { _ = try await task?.value }
     #expect(ticks == [[1, 2]])  // the first identifier was read back and counted
     #expect(link.sent.last == read3000)  // and the second never written
+}
+@Test func aRestorationDuringTheRunEndsItBeforeTheNextWrite() async throws {
+    // The link drops on the read-back of 3000, which the restored adapter reads again. 3001 still holds CC, but the
+    // module has most likely left the extended session during the restoration, so it is not written.
+    let link = i4(["56 03 22 30 01 00 00 00": ["656 F1 04 62 30 01 CC 00 00"]])
+    link.dropAfter = 9  // ATRV, the select's two commands, the session, 3000's read, ATST FF, write, ATST 32, read-back
+    var ticks: [[Int]] = []
+    await #expect(throws: LinkError.reconnected) { try await run(link, ready(two)) { ticks.append([$0, $1]) } }
+    #expect(ticks == [[1, 2]])  // 3000 was read back identical and counted
+    #expect(link.sent.filter { $0.contains(" 2E ") } == [write3000])
+}
+@Test func aDropOnTheWriteIsRethrownAndTheWriteIsNotSentAgain() async throws {
+    var ticks: [[Int]] = []
+    let link = i4(before: { cmd in if cmd == write3000 { throw LinkError.reconnected } })
+    await #expect(throws: LinkError.reconnected) { try await run(link, ready(two)) { ticks.append([$0, $1]) } }
+    #expect(ticks.isEmpty)  // 3000 may have been written, but it was not read back, so it is not counted
+    #expect(link.sent.filter { $0.contains(" 2E ") } == [write3000])
+    #expect(link.sent.last == write3000)  // no read-back, and the restoration is left to the next operation
 }
 @Test func describeNamesTheCommonCodes() {
     #expect(WriteTest.describe(0x33) == "needs security access")

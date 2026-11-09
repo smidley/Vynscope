@@ -207,7 +207,7 @@ struct WriteTestResultLines: View {
         case .changed(let identifier, let prepared, let now):
             line("Changed since the check at \(hex(identifier)), so nothing was written to it")
             mono("Checked \(bytes(prepared))")
-            mono(now.map { "Now \(bytes($0))" } ?? "Now no answer")
+            mono("Now \(bytes(now))")
         }
     }
 

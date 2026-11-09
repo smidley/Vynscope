@@ -75,6 +75,28 @@ private func module56(_ answers: [String: [String]]) -> FakeLink {
     #expect(try await Diag(link: link, log: Log()).writeDID(0x56, 0x3000, [0xAA]) == .negative(0x33))
     #expect(link.sent == select56 + ["ATST FF", shortWrite, "ATST 32"])
 }
+@Test func aBusyAnswerIsItsCodeAndTheWriteIsNotSentAgain() async throws {
+    let link = module56([shortWrite: ["656 F1 03 7F 2E 21 00 00 00"]])
+    #expect(try await Diag(link: link, log: Log()).writeDID(0x56, 0x3000, [0xAA]) == .negative(0x21))
+    #expect(link.sent == select56 + ["ATST FF", shortWrite, "ATST 32"])
+}
+@Test func aDropOnAConsecutiveFrameIsRethrownAndNothingFollows() async throws {
+    // The write of 01...0A to 3000: its first frame, then the drop on the consecutive frame in the middle of the
+    // request, then on the one that completes it, inside the long listen.
+    let middle = "56 21 03 04 05 06 07 08", completing = "56 22 09 0A 00 00 00 00"
+    let cuts: [(Int, [String])] = [
+        (4, select56 + [firstFrame13, middle]),
+        (6, select56 + [firstFrame13, middle, "ATST FF", completing]),
+    ]
+    for (dropAfter, sent) in cuts {
+        let link = module56([firstFrame13: ["656 F1 30 00 00 00 00 00 00"]])
+        link.dropAfter = dropAfter
+        await #expect(throws: LinkError.reconnected) {
+            try await Diag(link: link, log: Log()).writeDID(0x56, 0x3000, Array(0x01...0x0A))
+        }
+        #expect(link.sent == sent)  // each frame once, and nothing after the cut
+    }
+}
 @Test func aDropDuringTheWriteIsRethrownAndTheNextOperationRestores() async throws {
     let read = "56 03 22 30 00 00 00 00"
     let link = module56([read: ["656 F1 04 62 30 00 AA 00 00"]])
