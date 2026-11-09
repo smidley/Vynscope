@@ -131,6 +131,27 @@ private func temporaryFolder() -> URL {
     #expect(try store.latest(forVIN: i4) == new)  // past the junk and the other car's, and not the older one
     #expect(try store.latest(forVIN: other.vin) == other)
 }
+@Test func newestSkipsBackupsWhereTheModuleIsNotComplete() throws {
+    let dir = temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = BackupStore(directory: dir)
+    let i4 = "WBY73AW04RFFAKE19"
+    // A backup of the i4 at `date`, holding module 0x56 with `status`.
+    func backup(at date: Date, _ status: ModuleBackup.Status) -> Backup {
+        var backup = sampleBackup(vin: i4, at: date)
+        backup.modules = [ModuleBackup(address: 0x56, name: nil, signed: false, identification: .init(),
+                                       codingFiles: ["CAFD_1"], coding: ["3000": "AA"], method: .fullSweep,
+                                       status: status)]
+        return backup
+    }
+    let middle = backup(at: local(15, 0), .complete)
+    let backups = [backup(at: local(16, 0), .partial(reason: "module stopped answering after 5 identifiers")),
+                   backup(at: local(14, 3), .complete), middle]
+    for b in backups { _ = try store.save(b) }
+    #expect(try store.newest(forVIN: i4, complete: 0x56) == middle)
+    #expect(try store.newest(forVIN: i4, complete: 0x78) == nil)  // a module no backup holds
+    #expect(try store.newest(forVIN: "5UXWX7C5XF0K00000", complete: 0x56) == nil)  // another car
+}
 @Test func aFolderThatDoesNotExistYetHasNoBackups() throws {
     let store = BackupStore(directory: temporaryFolder())
     #expect(try store.list().isEmpty)
