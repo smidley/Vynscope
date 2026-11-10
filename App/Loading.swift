@@ -113,17 +113,19 @@ struct ProgressLine: View {
     }
 }
 
-/// The scan's progress line: the address it is at, of FF, and the modules that answered so far; Reconnecting to the
-/// adapter… while the link comes back. Stop ends the scan, or the fault read it is part of; a backup's scan has the
+/// The scan's progress line: the address it is at, of FF, and the modules that answered so far, or on a walk of the
+/// car's remembered systems the one it is asking, of how many; Reconnecting to the adapter… while the link comes back. Stop ends the scan, or the fault read it is part of; a backup's scan has the
 /// backup's Cancel instead.
 struct ScanProgress: View {
     @Environment(Flow.self) private var flow
 
     var body: some View {
         ProgressLine(
-            value: Double(flow.scanned), total: 255,
+            value: Double(flow.scanned), total: Double(flow.scanTotal),
             label: flow.reconnecting
                 ? "Reconnecting to the adapter…"
+                : flow.scanQuick
+                ? "Checking the car's systems · \(flow.scanned + 1) of \(flow.scanTotal)"
                 : "Scanning \(String(format: "%02X", flow.scanned)) of FF · \(flow.modules.count) answered so far",
             stop: flow.backupTask == nil ? { flow.stopScan() } : nil)
     }
