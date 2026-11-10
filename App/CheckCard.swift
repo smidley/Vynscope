@@ -1,11 +1,11 @@
 import BMWCodingCore
 import SwiftUI
 
-/// Check my car, the Car tab's first section: the car's nickname, then before a check the button and its hints;
-/// while it runs one line per step with Stop; after it the answer in a sentence with its counts, a row per system
-/// with codes and Explain it, See the codes and Check again; or a problem line with Try again, above an earlier
-/// answer. While another action holds the adapter it says what runs, and its buttons wait; while the link reconnects by
-/// itself it says so, and the buttons that start a check wait.
+/// Check my car, the Car tab's first section: the car's nickname, then before a check the button and its hints; while
+/// it runs one line per step with Stop; after it the answer in a sentence with its counts, a row per system with codes
+/// and Explain it, See the codes and Check again; or a problem line with Try again, above an earlier answer without its
+/// Check again, which Try again already is. While another action holds the adapter it says what runs, and its buttons
+/// wait; while the link reconnects by itself it says so, and the buttons that start a check wait.
 struct CheckCard: View {
     @Environment(Flow.self) private var flow
 
@@ -67,7 +67,8 @@ struct CheckCard: View {
         flow.link.state == .scanning || flow.link.state == .connecting ? "Connecting to the adapter…" : flow.activity
     }
 
-    /// The steps up to `step`, each before it done, as a skipped one is, then `step` running, then Stop.
+    /// The steps up to `step`, each before it done, as a skipped one is, then `step` running with its mark on its
+    /// line as the done ones have theirs, the walk's bar under the walk's words, then Stop.
     @ViewBuilder private func running(_ step: CheckStep) -> some View {
         let steps: [CheckStep] = [.connecting, .readingCar, .findingSystems, .readingFaults]
         let index = steps.firstIndex(of: step) ?? 0
@@ -80,19 +81,22 @@ struct CheckCard: View {
                 doneText(done)
             }
         }
-        HStack(alignment: .top) {
-            PulseMark(size: 14)
-            switch step {
-            case .connecting: Text("Connecting to the adapter")
-            case .readingCar: Text("Reading the car")
-            case .findingSystems:
-                // The scan's own bar, under the words.
-                ProgressLine(
-                    value: Double(flow.scanned), total: Double(flow.scanTotal),
-                    label: flow.scanQuick
-                        ? "Checking the car's systems · \(flow.scanned + 1) of \(flow.scanTotal)"
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                PulseMark(size: 14)
+                switch step {
+                case .connecting: Text("Connecting to the adapter")
+                case .readingCar: Text("Reading the car")
+                case .findingSystems:
+                    Text(flow.scanQuick
+                        ? flow.quickWalkWords
                         : "Looking for the car's systems · \(flow.modules.count) found")
-            case .readingFaults: Text(flow.readingFaults ?? "")
+                case .readingFaults: Text(flow.readingFaults ?? "")
+                }
+            }
+            if step == .findingSystems {
+                // The walk's bar, under its words.
+                ProgressBar(value: Double(flow.scanned), total: Double(flow.scanTotal))
             }
         }
         Button("Stop") { flow.stopCheck() }
@@ -110,7 +114,7 @@ struct CheckCard: View {
 
     /// The verdict in a sentence, green only when clean; its counts and the time in a footnote; a row per system with
     /// codes and its chips; then Explain it, filled unless a problem line above holds the filled action, See the codes
-    /// and Check again.
+    /// and, when no problem line shows, Check again: under a problem line its Try again is the same action.
     @ViewBuilder private func answer(_ verdict: CheckVerdict, filled: Bool) -> some View {
         Group {
             if verdict.codes == 0 {
@@ -150,8 +154,10 @@ struct CheckCard: View {
             flow.diagnosticsPath = []
         }
         .disabled(flow.busy)
-        Button("Check again", action: check)
-            .disabled(cannotCheck)
+        if filled {
+            Button("Check again", action: check)
+                .disabled(cannotCheck)
+        }
     }
 
     private func explain() {

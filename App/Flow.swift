@@ -66,9 +66,14 @@ final class Flow {
     var scanQuick = false
     /// What `scanned` counts up to: 255 on a walk of every address, the number of remembered systems on a quick one.
     var scanTotal = 255
-    /// Whether `modules` came from a walk of every address, rather than a quick walk of the remembered systems.
+    /// What a quick walk says it is doing, at the remembered system it asks: the connection line's, the Modules and
+    /// Backups progress's and the check card's words.
+    var quickWalkWords: String { "Checking the car's systems · \(scanned + 1) of \(scanTotal)" }
+    /// Whether `modules` came from a walk of every address that found at least one module, rather than from a quick
+    /// walk of the remembered systems.
     var modulesFromFullWalk = false
-    /// The remembered systems that did not answer the last quick walk; 0 after a walk of every address.
+    /// The remembered systems that did not answer the last walk that ended, of either kind; the check counts them as
+    /// systems it could not read.
     var silentSystems = 0
     var progress: BackupProgress?
     var lastBackup: URL?
@@ -159,7 +164,7 @@ final class Flow {
     var activity: String? {
         if checkStep == .connecting || checkStep == .readingCar { return "Checking the car" }
         if let readingFaults { return readingFaults }
-        if discovering && scanQuick { return "Checking the car's systems · \(scanned + 1) of \(scanTotal)" }
+        if discovering && scanQuick { return quickWalkWords }
         if discovering { return "Scanning \(String(format: "%02X", scanned)) of FF · \(modules.count) answered" }
         if backupTask != nil, let progress {
             return "Backing up · module \(progress.moduleIndex + 1) of \(progress.moduleCount)"
@@ -335,7 +340,8 @@ final class Flow {
 
     /// Scans for modules with `scan`, holding `busy`, in a task `stopScan()` and `endDiscovery()` can stop. With `full`
     /// the walk covers every address, as the Modules screen asks; without it only the systems remembered for the car,
-    /// when there are any. A stop says nothing; any other failure says why in `error`. Returns whether a stop ended it.
+    /// while its last walk of every address is recent. A stop says nothing; any other failure says why in `error`.
+    /// Returns whether a stop ended it.
     @discardableResult
     func discover(full: Bool = false) async -> Bool {
         guard let diag, let vin else { error = "Not connected"; return false }
@@ -357,16 +363,20 @@ final class Flow {
         return task.isCancelled
     }
 
-    /// Lists the modules that answer, as they answer, with `discovering`, `scanned` and `scanTotal` following the walk;
-    /// leaves `busy` to the caller. Unless `full`, a car with remembered systems (`KnownModules`) is asked only at
-    /// those addresses; any other walk probes every address. A walk of every address that ends, with at least one module,
-    /// is a full walk: it sets `modulesFromFullWalk`, clears `silentSystems` and remembers the answering addresses for
-    /// the VIN, a failed save only logged, as the file is a cache. A quick walk that ends clears `modulesFromFullWalk`
-    /// and counts the remembered systems that stayed silent in `silentSystems`. A walk that is cancelled or fails
-    /// empties the list, saves nothing and throws, so that no backup is ever made of part of the car.
+    /// Lists the modules that answer, as they answer, with `discovering`, `scanned` and `scanTotal` following the
+    /// walk; leaves `busy` to the caller. The walk is quick, asking only the car's remembered systems
+    /// (`KnownModules`), when not `full`, some are remembered and the car's last walk of every address is at most
+    /// `KnownModules.maxAge` old; any other walk probes every address, so a system a first walk missed is found within
+    /// a month. A walk of either kind that ends counts in `silentSystems` the remembered systems that did not answer,
+    /// which the check counts as unread. A walk of every address that ends with at least one module sets
+    /// `modulesFromFullWalk` and adds the answering addresses to those remembered for the VIN with the time, a failed
+    /// save only logged, as the file is a cache; any other walk that ends clears `modulesFromFullWalk` and saves
+    /// nothing. A walk that is cancelled or fails empties the list, saves nothing and throws, so that no backup is
+    /// ever made of part of the car.
     private func scan(diag: Diag, vin: String, full: Bool) async throws {
-        let remembered = full ? [] : KnownModules.load(from: file("known-modules.json")).addresses(forVIN: vin) ?? []
-        let quick = !remembered.isEmpty
+        let saved = KnownModules.load(from: file("known-modules.json"))
+        let remembered = saved.addresses(forVIN: vin) ?? []
+        let quick = !full && !remembered.isEmpty && saved.isRecent(forVIN: vin, at: .now)
         // The addresses `Discovery` walks by default unless the remembered systems are asked.
         let addresses = quick ? remembered : (UInt8.min...UInt8.max).filter { $0 != 0xF1 }
         discovering = true
@@ -377,8 +387,8 @@ final class Flow {
         scanned = 0
         do {
             // One walk per address. A cancelled walk still finishes the address in progress, and nothing tells its
-            // consumer when; a walk of one address is done with `diag` once its stream ends. Each walk runs in a task of
-            // its own, which a stop does not cancel, so a stop waits for that end and leaves no request in flight.
+            // consumer when; a walk of one address is done with `diag` once its stream ends. Each walk runs in a task
+            // of its own, which a stop does not cancel, so a stop waits for that end and leaves no request in flight.
             for (index, address) in addresses.enumerated() {
                 scanned = quick ? index : Int(address)
                 try Task.checkCancellation()
@@ -394,20 +404,16 @@ final class Flow {
             modules = []
             throw error
         }
-        if quick {
-            modulesFromFullWalk = false
-            silentSystems = remembered.count { address in !modules.contains { $0.address == address } }
-        } else {
-            modulesFromFullWalk = !modules.isEmpty
-            silentSystems = 0
-            guard !modules.isEmpty else { return }
-            var known = KnownModules.load(from: file("known-modules.json"))
-            known.remember(modules.map(\.address), forVIN: vin)
-            do {
-                try known.save(to: file("known-modules.json"))
-            } catch {
-                log.note("could not save the remembered systems: \(error.localizedDescription)")
-            }
+        silentSystems = remembered.count { address in !modules.contains { $0.address == address } }
+        modulesFromFullWalk = !quick && !modules.isEmpty
+        guard modulesFromFullWalk else { return }
+        // Loaded again: the walk took minutes, and the file is replaced as a whole.
+        var known = KnownModules.load(from: file("known-modules.json"))
+        known.remember(modules.map(\.address), forVIN: vin)
+        do {
+            try known.save(to: file("known-modules.json"))
+        } catch {
+            log.note("could not save the remembered systems: \(error.localizedDescription)")
         }
     }
 
@@ -419,8 +425,9 @@ final class Flow {
     }
 
     /// Reads every module's fault codes and standard OBD-II with `readFaultCodes()`; scans for modules first when none
-    /// is listed, asking only the car's remembered systems when it has any. Runs in a task `stopScan()` can stop, which
-    /// says Cancelled and keeps the report read before. Nothing is cleared.
+    /// is listed, asking only the car's remembered systems while its last walk of every address is recent, and every
+    /// address otherwise. Runs in a task `stopScan()` can stop, which says Cancelled and keeps the report read before.
+    /// Nothing is cleared.
     func readFaults() async {
         guard let diag, let vin, !gaveUp else { error = "Not connected"; return }
         guard !busy else { error = "Still working"; return }
@@ -468,13 +475,14 @@ final class Flow {
     }
 
     /// Check my car: connects when there is no usable adapter, reads the car when no VIN is known, looks for its
-    /// systems when none is listed or some remembered ones were silent in the last walk, then reads the fault codes,
-    /// with `checkStep` at the step it runs. Holds `busy` throughout, in a task `stopCheck()` can stop. The VIN read
-    /// runs in a task of its own, which the stop does not cancel; the walk and the fault read end at their next
-    /// request. A stop says nothing. A step that fails, or a car that does not answer, says so in `checkProblem`;
-    /// the error still goes through `explain(_:)` for its effects, its text to the log, and `error` stays nil. An
-    /// error that ends a stopped check goes through `explain(_:)` too, and only its problem line is left out. Does
-    /// nothing while the link reconnects by itself, as `connect()`.
+    /// systems when none is listed or some remembered ones were silent in the last walk, a quick walk of the remembered
+    /// systems while the car's last walk of every address is at most 30 days old and a walk of every address otherwise,
+    /// then reads the fault codes, with `checkStep` at the step it runs. Holds `busy` throughout, in a task
+    /// `stopCheck()` can stop. The VIN read runs in a task of its own, which the stop does not cancel; the walk and the
+    /// fault read end at their next request. A stop says nothing. A step that fails, or a car that does not answer,
+    /// says so in `checkProblem`; the error still goes through `explain(_:)` for its effects, its text to the log, and
+    /// `error` stays nil. An error that ends a stopped check goes through `explain(_:)` too, and only its problem line
+    /// is left out. Does nothing while the link reconnects by itself, as `connect()`.
     func checkCar() async {
         guard !reconnecting else { return }
         guard !busy else { error = "Still working"; return }
@@ -637,12 +645,12 @@ final class Flow {
         return (diag, car)
     }
 
-    /// Starts a backup of every listed module into one file in the Backups folder, scanning for the modules first
-    /// with `scan` when none is listed, or when the list came from a quick walk of the remembered systems, which would
-    /// leave modules out of the backup: the scan then covers every address. A scan that finds none writes no file. Refused while a scan runs, which is left
-    /// to finish. `progress` follows the run, `lastBackup` is the file once it is written, and an error or a cancel, in
-    /// either stage, ends up in `error`. A full rescan sweeps every module in full even where a set of identifiers is
-    /// remembered.
+    /// Starts a backup of every listed module into one file in the Backups folder, scanning for the modules first with
+    /// `scan` when none is listed, or when the list came from a quick walk of the remembered systems, which would leave
+    /// modules out of the backup: the scan then covers every address. A scan that finds none writes no file. Refused
+    /// while a scan runs, which is left to finish. `progress` follows the run, `lastBackup` is the file once it is
+    /// written, and an error or a cancel, in either stage, ends up in `error`. A full rescan sweeps every module in
+    /// full even where a set of identifiers is remembered.
     func backup(fullRescan: Bool) {
         guard backupTask == nil else { error = "Still working"; return }
         backupTask = Task {

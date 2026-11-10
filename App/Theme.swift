@@ -12,11 +12,13 @@ extension Color {
 /// A screen's one primary action against its quiet ones.
 extension View {
     /// A filled button in the darker orange with paper text on it, which reads at 4.5 to 1 in both appearances. One
-    /// per screen: Check my car, Read fault codes, Scan, Run health check, Back up, Send.
+    /// per screen: Check my car, Read fault codes, Scan, Run health check, Back up, Send. In a list the rule under it
+    /// starts at the row's leading edge, as under the other rows, rather than at the button's label.
     func primaryAction() -> some View {
         buttonStyle(.borderedProminent)
             .tint(Color.vynOrangeDark)
             .foregroundStyle(Color.vynPaper)
+            .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
     }
 
     /// The screen's other buttons in ink, so that its primary action is the only orange; a destructive button keeps

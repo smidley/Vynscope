@@ -79,8 +79,8 @@ extension PulseMark {
     }
 }
 
-/// A wait with a count: what runs and how far, in words, over a bar in the accent on the line color; Stop at the end of
-/// the words when `stop` is given.
+/// A wait with a count: what runs and how far, in words, over a `ProgressBar`; Stop at the end of the words when
+/// `stop` is given.
 struct ProgressLine: View {
     let value: Double
     let total: Double
@@ -100,22 +100,33 @@ struct ProgressLine: View {
                 }
             }
             // The words say how far; the bar is for the eye.
-            GeometryReader { proxy in
-                Capsule().fill(Color.vynLine)
-                    .overlay(alignment: .leading) {
-                        Capsule().fill(Color.vynOrange)
-                            .frame(width: proxy.size.width * (total > 0 ? min(max(value / total, 0), 1) : 0))
-                    }
-            }
-            .frame(height: 4)
-            .accessibilityHidden(true)
+            ProgressBar(value: value, total: total)
         }
     }
 }
 
+/// The bar of a wait with a count: `value` of `total` in the accent on the line color. Hidden from VoiceOver, which
+/// has the words beside it.
+struct ProgressBar: View {
+    let value: Double
+    let total: Double
+
+    var body: some View {
+        GeometryReader { proxy in
+            Capsule().fill(Color.vynLine)
+                .overlay(alignment: .leading) {
+                    Capsule().fill(Color.vynOrange)
+                        .frame(width: proxy.size.width * (total > 0 ? min(max(value / total, 0), 1) : 0))
+                }
+        }
+        .frame(height: 4)
+        .accessibilityHidden(true)
+    }
+}
+
 /// The scan's progress line: the address it is at, of FF, and the modules that answered so far, or on a walk of the
-/// car's remembered systems the one it is asking, of how many; Reconnecting to the adapter… while the link comes back. Stop ends the scan, or the fault read it is part of; a backup's scan has the
-/// backup's Cancel instead.
+/// car's remembered systems the one it is asking, of how many; Reconnecting to the adapter… while the link comes back.
+/// Stop ends the scan, or the fault read it is part of; a backup's scan has the backup's Cancel instead.
 struct ScanProgress: View {
     @Environment(Flow.self) private var flow
 
@@ -125,7 +136,7 @@ struct ScanProgress: View {
             label: flow.reconnecting
                 ? "Reconnecting to the adapter…"
                 : flow.scanQuick
-                ? "Checking the car's systems · \(flow.scanned + 1) of \(flow.scanTotal)"
+                ? flow.quickWalkWords
                 : "Scanning \(String(format: "%02X", flow.scanned)) of FF · \(flow.modules.count) answered so far",
             stop: flow.backupTask == nil ? { flow.stopScan() } : nil)
     }

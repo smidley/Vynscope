@@ -26,7 +26,7 @@ struct ModulesView: View {
                 SkeletonRows()
             }
             if !flow.modules.isEmpty, !flow.modulesFromFullWalk, !flow.discovering {
-                Text("The systems remembered from the last full scan. Scan looks at every address again.")
+                Text("The systems remembered for this car. Rescan looks at every address again.")
                     .font(.vyn(.footnote))
                     .foregroundStyle(Color.vynMuted)
             }

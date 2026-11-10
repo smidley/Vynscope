@@ -2,7 +2,8 @@ import SwiftUI
 
 /// The line under the title of every screen but the Car tab's: the connection (the car and its modules, how the link
 /// is doing, Not connected with Connect, or no car read with Read, both buttons opening the Car tab), what runs now on
-/// any tab, and the flow's error.
+/// any tab, and the flow's error. With Advanced off both buttons read Check my car, as the Car tab then has no Connect
+/// or Read, only the check.
 struct ConnectionLine: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -19,12 +20,12 @@ struct ConnectionLine: View {
                 } else if flow.diag == nil || flow.gaveUp {
                     Text("Not connected")
                         .foregroundStyle(Color.vynMuted)
-                    Button("Connect") { flow.tab = .car }
+                    Button(flow.advanced ? "Connect" : "Check my car") { flow.tab = .car }
                         .buttonStyle(.borderless)
                 } else if flow.vin == nil {
                     Text("Adapter connected · no car read")
                         .foregroundStyle(Color.vynMuted)
-                    Button("Read") { flow.tab = .car }
+                    Button(flow.advanced ? "Read" : "Check my car") { flow.tab = .car }
                         .buttonStyle(.borderless)
                 } else {
                     connected

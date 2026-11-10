@@ -70,9 +70,9 @@ struct CarTab: View {
                     Button("Forget adapter") { UserDefaults.standard.removeObject(forKey: Flow.adapterKey) }
                 } footer: {
                     Text("""
-                        Bonding only works for five minutes after the adapter is plugged in. Enter 123456 if asked for a \
-                        PIN. Next time the app reconnects to the last adapter by itself; Forget adapter makes it scan \
-                        for one instead.
+                        Bonding only works for five minutes after the adapter is plugged in. Enter 123456 if asked \
+                        for a PIN. Next time the app reconnects to the last adapter by itself; Forget adapter makes it \
+                        scan for one instead.
                         """)
                         .font(.vyn(.footnote))
                         .foregroundStyle(Color.vynMuted)

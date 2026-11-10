@@ -48,9 +48,11 @@ struct VynscopeApp: App {
 }
 
 /// The four tabs, a navigation stack each, Programming only with Advanced on: a tab bar on the iPhone, a sidebar on the
-/// Mac. The Diagnostics stack follows
-/// `Flow.diagnosticsPath`, which the check's Explain it and See the codes set. The iPhone's Log sheet opens over
-/// whichever tab is on screen. At launch it connects to the saved adapter by itself.
+/// Mac. The Diagnostics stack follows `Flow.diagnosticsPath`, which the check's Explain it and See the codes set. The
+/// iPhone's Log sheet opens over whichever tab is on screen. With Advanced on, at launch it connects to the saved
+/// adapter by itself; with Advanced off it does not, and the check connects when it is tapped, because a connect
+/// nobody asked for fails in technical words on the first screen whenever the adapter is out of reach, and forgets
+/// the saved adapter.
 struct RootView: View {
     @Environment(Flow.self) private var flow
     @State private var programmingPath = NavigationPath()
@@ -84,10 +86,12 @@ struct RootView: View {
         .tabViewStyle(.sidebarAdaptable)
         .task {
             // Once per launch, not per window: after that, connecting again is the owner's to ask for, after a
-            // Disconnect, a give-up or a Reconnect that failed.
+            // Disconnect, a give-up or a Reconnect that failed. Only with Advanced on: with it off the check connects
+            // when tapped, as a connect nobody asked for fails in technical words on the first screen whenever the
+            // adapter is out of reach, and forgets the saved adapter.
             guard !flow.autoConnectAttempted else { return }
             flow.autoConnectAttempted = true
-            if flow.link.state == .off, flow.adapter == nil,
+            if flow.advanced, flow.link.state == .off, flow.adapter == nil,
                UserDefaults.standard.string(forKey: Flow.adapterKey) != nil {
                 await flow.connect()
             }
