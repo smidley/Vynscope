@@ -9,7 +9,7 @@ Scott wants Vynscope to be easy for people of all skill levels. Today the first 
 ## Goals
 
 - One tap on the first screen connects, reads the car, finds its systems, reads every fault code and says the result as a sentence.
-- A later check of a car the app has seen takes under a minute, because the car's systems are remembered. In the car log of 2026-11-04 the scan of every address took about three minutes and the fault read about twelve seconds.
+- A later check of a car the app has seen takes under a minute, because the car's systems are remembered; about once a month it looks at every address again. In the car log of 2026-11-04 the scan of every address took about three minutes and the fault read about twelve seconds.
 - With Advanced off, nothing on screen needs car knowledge.
 - With Advanced on, every screen and control of today is there, under the new button.
 
@@ -67,15 +67,16 @@ Under the card, in both modes: the VIN and the nickname field, as today. Only wi
 - Saved in the user defaults; off when never set.
 - Off hides: the Programming tab, the Log button on every screen, the raw status byte on fault rows, the Car tab's adapter controls listed above, and in Settings the Model, Effort and Prices sections and the Mac's app folder.
 - Off keeps: Car with the check card, Diagnostics with the fault codes and the mechanic, and Settings with the AI provider, its sign-in, Privacy, Conversations and the switch.
+- Off also means the app does not connect to the saved adapter by itself at launch: the check connects when tapped.
 
 ## Decided: remembered systems
 
-- When a walk of every address ends for a car, the addresses that answered are saved for its VIN in `known-modules.json` in the app folder. Every later full walk of that car replaces them.
-- A check of a car with remembered systems walks only those addresses. A remembered system that does not answer raises no error, and the verdict counts it as one that could not be read. When none answers, the check ends with the problem line for a silent car.
+- When a walk of every address ends for a car, the addresses that answered are added to those saved for its VIN in `known-modules.json` in the app folder, with the time of the walk. The list only grows: a system that answered once stays remembered.
+- A check of a car with remembered systems walks only those addresses while the car's last walk of every address is at most 30 days old; after that the check walks every address again. A remembered system that does not answer a walk, of either kind, raises no error, and the verdict counts it as one that could not be read. When none answers, the check ends with the problem line for a silent car.
 - Fault codes' Read and the mechanic's health check, when no module is listed, walk the same way: the remembered addresses when the car has them, every address otherwise. So a read from any screen takes as long as the check does.
 - The Modules screen's Scan and a backup's scan always walk every address.
 - The app knows whether its module list came from a full walk. A backup started on a list that did not scans in full first, exactly as it does today when no module is listed.
-- The Modules screen shows a list that came from the remembered addresses with one more line: "The systems remembered from the last full scan. Scan looks at every address again." It does not rescan by itself.
+- The Modules screen shows a list that came from the remembered addresses with one more line: "The systems remembered for this car. Rescan looks at every address again." It does not rescan by itself.
 
 ## Decided: the verdict lives in Core
 
@@ -100,6 +101,7 @@ The counts and rows of the answer are computed in the Core package from the faul
 - The first-connection hint about the five minutes and the PIN stays visible in simple mode, because pairing needs it.
 - While writing the plan: the walk of the remembered systems gets a step line of its own, since it takes about half a minute; Stop during the connecting step is today's Disconnect; the Advanced switch cannot be changed while the app is working.
 - After the builder check: a remembered system that stays silent counts as could not be read; "systems checked" counts only the systems that were read; standard codes count only when the car reported some, and a standard read the adapter failed on counts as unread; Fault codes' Read and the mechanic's health check use the remembered systems too, which changes how long they take today; the Modules screen says when its list is the remembered one.
+- After the final review: the remembered systems only grow, and a check looks at every address again once the last such walk is more than 30 days old, because a list that can shrink, or a first walk made with the car half asleep, would let the card say a green No fault codes on part of the car. With Advanced off the app does not connect by itself at launch, because that connect's failure was a technical error naming the hidden Connect button. The Modules note names its button as it reads, Rescan. Under a problem line the card leaves out Check again, which Try again already is. Check again asks silent systems again, and an answer keeps the silent count of its own read.
 
 ## What Scott verifies
 
@@ -114,3 +116,4 @@ In the car:
 - A second launch's check takes under a minute.
 - Explain it gets the mechanic's explanation; See the codes shows the list.
 - With Advanced on, a backup after a quick check still walks every address first.
+- With the ignition off after an earlier full check, a check counts the systems that stay silent as could not be read and is not green.
