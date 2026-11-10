@@ -48,8 +48,8 @@ Scott approved the mockup of 2026-11-10 (`.superpowers/brainstorm/30196-17943299
   - `Stop`, which ends the check after the request in flight and returns the card to its state before
 - **The answer.**
   - The sentence: `No fault codes`, or `<N> fault codes in <M> systems`, inflected. Green only when there are no codes and every system could be read; ink otherwise.
-  - Under it, in muted footnote text: `<K> active now` when any code is active, `<S> systems checked`, `<U> could not be read` when any refused or gave no answer, and the time.
-  - One row per system with codes, in the read's order: its plain name (the app's description of it, else its BMW name, else `System <address>`) and the chips it has, each once, in the order active, pending, stored, old. Standard OBD codes are one more row, `Standard codes`, and count as one more system.
+  - Under it, in muted footnote text: `<K> active now` when any code is active, `<S> systems checked`, `<U> could not be read` when U is not zero, and the time. S counts the systems whose fault read came back with a list, empty or not. U counts every other system: one that refused, gave no answer or gave an unreadable one, a remembered system that stayed silent in this check, and the standard codes when the adapter failed while reading them.
+  - One row per system with codes, in the read's order: its plain name (the app's description of it, else its BMW name, else `System <address>`) and the chips it has, each once, in the order active, pending, stored, old. Standard OBD codes, when the car reported any, are one more row, `Standard codes`: they add to N and count as one more system with codes. A car whose controllers answer no standard request adds nothing and is not counted as unread.
   - Actions: `Explain it`, filled, when there are codes; `See the codes`; and `Check again`.
 - **A problem.** One line saying what to do, and `Try again`. For example: "The car did not answer. Switch the ignition on and try again.", "Bluetooth is off. Switch it on and try again.", "No adapter found. Plug it in, wait for its light and try again." The error as the app words it today still goes to the log.
 
@@ -71,13 +71,15 @@ Under the card, in both modes: the VIN and the nickname field, as today. Only wi
 ## Decided: remembered systems
 
 - When a walk of every address ends for a car, the addresses that answered are saved for its VIN in `known-modules.json` in the app folder. Every later full walk of that car replaces them.
-- A check of a car with remembered systems walks only those addresses. A remembered system that does not answer is left out of that check without an error. When none answers, the check ends with the problem line for a silent car.
+- A check of a car with remembered systems walks only those addresses. A remembered system that does not answer raises no error, and the verdict counts it as one that could not be read. When none answers, the check ends with the problem line for a silent car.
+- Fault codes' Read and the mechanic's health check, when no module is listed, walk the same way: the remembered addresses when the car has them, every address otherwise. So a read from any screen takes as long as the check does.
 - The Modules screen's Scan and a backup's scan always walk every address.
 - The app knows whether its module list came from a full walk. A backup started on a list that did not scans in full first, exactly as it does today when no module is listed.
+- The Modules screen shows a list that came from the remembered addresses with one more line: "The systems remembered from the last full scan. Scan looks at every address again." It does not rescan by itself.
 
 ## Decided: the verdict lives in Core
 
-The counts and rows of the answer are computed in the Core package from the fault read, as one value with tests: the number of codes, of systems with codes, of active codes, of systems read and not read, the rows, and whether nothing answered. The card only words it.
+The counts and rows of the answer are computed in the Core package from the fault read, as one value with tests: the number of codes, of systems with codes, of active codes, of systems read and not read, the rows, and whether nothing answered. It takes the fault read and the number of remembered systems that stayed silent. The card only words it.
 
 ## Left to the builder
 
@@ -96,6 +98,7 @@ The counts and rows of the answer are computed in the Core package from the faul
 - A green verdict only when every system could be read. In the last car log some systems gave no answer to the fault read, so the footnote will often say "could not be read".
 - Standard OBD codes count as one more system.
 - The first-connection hint about the five minutes and the PIN stays visible in simple mode, because pairing needs it.
+- After the builder check: a remembered system that stays silent counts as could not be read; "systems checked" counts only the systems that were read; standard codes count only when the car reported some, and a standard read the adapter failed on counts as unread; Fault codes' Read and the mechanic's health check use the remembered systems too, which changes how long they take today; the Modules screen says when its list is the remembered one.
 
 ## What Scott verifies
 
