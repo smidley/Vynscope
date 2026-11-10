@@ -47,7 +47,8 @@ struct VynscopeApp: App {
     }
 }
 
-/// The four tabs, a navigation stack each: a tab bar on the iPhone, a sidebar on the Mac. The Diagnostics stack follows
+/// The four tabs, a navigation stack each, Programming only with Advanced on: a tab bar on the iPhone, a sidebar on the
+/// Mac. The Diagnostics stack follows
 /// `Flow.diagnosticsPath`, which the check's Explain it and See the codes set. The iPhone's Log sheet opens over
 /// whichever tab is on screen. At launch it connects to the saved adapter by itself.
 struct RootView: View {
@@ -68,11 +69,13 @@ struct RootView: View {
                         .navigationDestination(for: DiagnosticsRoute.self) { _ in MechanicView() }
                 }
             }
-            Tab("Programming", systemImage: "cpu", value: .programming) {
-                NavigationStack(path: $programmingPath) { ModulesView().tabRoot("Modules") }
-                    // A different car pops the old car's module detail; its coding would otherwise reload from this
-                    // car's backup.
-                    .onChange(of: flow.vin) { programmingPath = NavigationPath() }
+            if flow.advanced {
+                Tab("Programming", systemImage: "cpu", value: .programming) {
+                    NavigationStack(path: $programmingPath) { ModulesView().tabRoot("Modules") }
+                        // A different car pops the old car's module detail; its coding would otherwise reload from
+                        // this car's backup.
+                        .onChange(of: flow.vin) { programmingPath = NavigationPath() }
+                }
             }
             Tab("Settings", systemImage: "gear", value: .settings) {
                 NavigationStack { AISettingsView().tabRoot("Settings") }
@@ -98,12 +101,12 @@ struct RootView: View {
 }
 
 private extension View {
-    /// A tab's root screen: its title inline and Log in the toolbar, over ivory that reaches under the bar, where the
-    /// navigation stack paints its own background over the window's.
+    /// A tab's root screen: its title inline and, with Advanced on, Log in the toolbar, over ivory that reaches under
+    /// the bar, where the navigation stack paints its own background over the window's.
     func tabRoot(_ title: LocalizedStringKey) -> some View {
         navigationTitle(title)
             .toolbarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem { LogButton() } }
+            .toolbar { LogToolbar() }
             .background(Color.vynIvory)
     }
 }

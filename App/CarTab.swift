@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Check my car's card first, then the adapter and the car: the adapter's state and what it says it is, Connect,
-/// Reconnect while a car is known and the link gave up or its adapter was dropped, Disconnect and Forget adapter; then
-/// Read, the VIN with a field to give or change the car's nickname, and the other cars on file.
+/// Check my car's card first, then, with Advanced on, the adapter and the car: the adapter's state and what it says it
+/// is, Connect, Reconnect while a car is known and the link gave up or its adapter was dropped, Disconnect and Forget
+/// adapter, and Read; then the VIN with a field to give or change the car's nickname, and with Advanced on the other
+/// cars on file.
 struct CarTab: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -15,73 +16,75 @@ struct CarTab: View {
                     Text(error).foregroundStyle(Color.vynRed)
                 }
             }
-            Section {
-                LabeledContent("Adapter") {
-                    HStack {
-                        if flow.link.state == .scanning || flow.link.state == .connecting || flow.reconnecting {
-                            PulseMark(size: 14)
+            if flow.advanced {
+                Section {
+                    LabeledContent("Adapter") {
+                        HStack {
+                            if flow.link.state == .scanning || flow.link.state == .connecting || flow.reconnecting {
+                                PulseMark(size: 14)
+                            }
+                            Text(stateText)
+                                .foregroundStyle(flow.link.state == .ready ? Color.vynGreen : Color.vynMuted)
                         }
-                        Text(stateText)
-                            .foregroundStyle(flow.link.state == .ready ? Color.vynGreen : Color.vynMuted)
+                    }
+                    if let warning = flow.link.warning {
+                        Text(warning)
+                            .font(.vyn(.footnote))
+                            .foregroundStyle(Color.vynOrangeDark)
+                    }
+                    // The drop's own warning clears with the next answer, so the count is what stays.
+                    if flow.link.reconnects > 0 {
+                        Text("Reconnected ^[\(flow.link.reconnects) time](inflect: true) this session")
+                            .font(.vyn(.footnote))
+                            .foregroundStyle(Color.vynMuted)
+                    }
+                    if let adapter = flow.adapter {
+                        LabeledContent("Model", value: flow.link.deviceModel ?? "not reported")
+                        LabeledContent("Firmware", value: flow.link.deviceFirmware ?? "not reported")
+                        LabeledContent("Device", value: adapter.model.isEmpty ? "not reported" : adapter.model)
+                        LabeledContent(
+                            "Device firmware", value: adapter.firmware.isEmpty ? "not reported" : adapter.firmware)
                     }
                 }
-                if let warning = flow.link.warning {
-                    Text(warning)
-                        .font(.vyn(.footnote))
-                        .foregroundStyle(Color.vynOrangeDark)
-                }
-                // The drop's own warning clears with the next answer, so the count is what stays.
-                if flow.link.reconnects > 0 {
-                    Text("Reconnected ^[\(flow.link.reconnects) time](inflect: true) this session")
+                Section {
+                    // Quiet: the check card's button is the screen's filled action.
+                    Button("Connect") { Task { await flow.connect() } }
+                        .disabled(flow.busy || flow.reconnecting)
+                    // A car is known and the link gave up, or an action's error dropped its adapter (`Flow.explain`).
+                    // With no car, Connect alone is offered: it reads the car.
+                    if flow.vin != nil && (flow.diag == nil || flow.gaveUp) {
+                        if flow.error == nil {
+                            Text(reconnectReason)
+                                .foregroundStyle(Color.vynRed)
+                        }
+                        Button("Reconnect") {
+                            Task {
+                                await flow.reconnect()
+                                if flow.diag != nil { ai.error = nil }  // the mechanic's line that asked for it
+                            }
+                        }
+                        .disabled(flow.busy || flow.reconnecting)
+                    }
+                    Button("Disconnect") { flow.disconnect() }
+                        .disabled(flow.link.state == .off)
+                    Button("Forget adapter") { UserDefaults.standard.removeObject(forKey: Flow.adapterKey) }
+                } footer: {
+                    Text("""
+                        Bonding only works for five minutes after the adapter is plugged in. Enter 123456 if asked for a \
+                        PIN. Next time the app reconnects to the last adapter by itself; Forget adapter makes it scan \
+                        for one instead.
+                        """)
                         .font(.vyn(.footnote))
                         .foregroundStyle(Color.vynMuted)
                 }
-                if let adapter = flow.adapter {
-                    LabeledContent("Model", value: flow.link.deviceModel ?? "not reported")
-                    LabeledContent("Firmware", value: flow.link.deviceFirmware ?? "not reported")
-                    LabeledContent("Device", value: adapter.model.isEmpty ? "not reported" : adapter.model)
-                    LabeledContent(
-                        "Device firmware", value: adapter.firmware.isEmpty ? "not reported" : adapter.firmware)
+                Section {
+                    Button("Read") { Task { await flow.readCar() } }
+                        .disabled(flow.busy)
+                } footer: {
+                    Text("Turn the ignition on; there is no need to start driving.")
+                        .font(.vyn(.footnote))
+                        .foregroundStyle(Color.vynMuted)
                 }
-            }
-            Section {
-                // Quiet: the check card's button is the screen's filled action.
-                Button("Connect") { Task { await flow.connect() } }
-                    .disabled(flow.busy || flow.reconnecting)
-                // A car is known and the link gave up, or an action's error dropped its adapter (`Flow.explain`).
-                // With no car, Connect alone is offered: it reads the car.
-                if flow.vin != nil && (flow.diag == nil || flow.gaveUp) {
-                    if flow.error == nil {
-                        Text(reconnectReason)
-                            .foregroundStyle(Color.vynRed)
-                    }
-                    Button("Reconnect") {
-                        Task {
-                            await flow.reconnect()
-                            if flow.diag != nil { ai.error = nil }  // the mechanic's line that asked for it
-                        }
-                    }
-                    .disabled(flow.busy || flow.reconnecting)
-                }
-                Button("Disconnect") { flow.disconnect() }
-                    .disabled(flow.link.state == .off)
-                Button("Forget adapter") { UserDefaults.standard.removeObject(forKey: Flow.adapterKey) }
-            } footer: {
-                Text("""
-                    Bonding only works for five minutes after the adapter is plugged in. Enter 123456 if asked for a \
-                    PIN. Next time the app reconnects to the last adapter by itself; Forget adapter makes it scan \
-                    for one instead.
-                    """)
-                    .font(.vyn(.footnote))
-                    .foregroundStyle(Color.vynMuted)
-            }
-            Section {
-                Button("Read") { Task { await flow.readCar() } }
-                    .disabled(flow.busy)
-            } footer: {
-                Text("Turn the ignition on; there is no need to start driving.")
-                    .font(.vyn(.footnote))
-                    .foregroundStyle(Color.vynMuted)
             }
             if let vin = flow.vin {
                 Section {
@@ -99,7 +102,7 @@ struct CarTab: View {
                     }
                 }
             }
-            if !flow.otherCars.isEmpty {
+            if flow.advanced && !flow.otherCars.isEmpty {
                 Section("Also on file") {
                     ForEach(flow.otherCars, id: \.vin) { car in
                         LabeledContent(car.nickname, value: car.vin)

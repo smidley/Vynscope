@@ -120,8 +120,9 @@ struct FaultCodesView: View {
 }
 
 /// A fault code in mono and its chip, then, at the row's end so the bytes line up, the raw status byte in muted mono
-/// when the code came with one. A status that is not a byte has no chip.
+/// when the code came with one and Advanced is on. A status that is not a byte has no chip.
 private struct FaultRow: View {
+    @Environment(Flow.self) private var flow
     let code: String
     let chip: FaultChip?
     var status: String?
@@ -134,7 +135,7 @@ private struct FaultRow: View {
             if let chip {
                 FaultChipLabel(chip: chip)
             }
-            if let status {
+            if flow.advanced, let status {
                 Spacer()
                 Text(status)
                     .font(.vynMono(.caption))

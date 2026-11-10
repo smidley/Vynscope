@@ -54,9 +54,7 @@ struct ModuleDetailView: View {
         .background(Color.vynIvory)
         .connectionLine()
         .navigationTitle(module.title)
-        .toolbar {
-            ToolbarItem { LogButton() }
-        }
+        .toolbar { LogToolbar() }
         .task(id: [String(module.address), flow.lastBackup?.path ?? ""]) {
             hasBackup = flow.newestBackup(complete: module.address) != nil
             coding = flow.latestBackup()?.modules.first { $0.address == module.address }?

@@ -82,7 +82,7 @@ struct MechanicView: View {
                 Button("New conversation", systemImage: "square.and.pencil") { confirmingNew = true }
                     .disabled(flow.busy || flow.diag == nil || flow.gaveUp || flow.vin == nil || !ai.hasCredentials)
             }
-            ToolbarItem { LogButton() }
+            LogToolbar()
         }
         .confirmationDialog("Start a new conversation?", isPresented: $confirmingNew) {
             Button("New conversation", role: .destructive) { Task { await ai.newConversation() } }

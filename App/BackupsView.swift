@@ -89,9 +89,7 @@ struct BackupsView: View {
         .background(Color.vynIvory)
         .connectionLine()
         .navigationTitle("Backups")
-        .toolbar {
-            ToolbarItem { LogButton() }
-        }
+        .toolbar { LogToolbar() }
         .task(id: flow.lastBackup) {
             saved = flow.lastBackup == nil ? nil : flow.latestBackup()
             firstBackup = flow.isFirstBackup()

@@ -38,6 +38,15 @@ enum DiagnosticsRoute: Hashable {
 final class Flow {
     /// The tab on screen. A reconnect that failed and a different car go back to Car.
     var tab = AppTab.car
+    /// Whether the screens and controls that need car knowledge are shown: Programming, the adapter's details, raw
+    /// status bytes, the log and the model, effort, price and folder settings. Off until the owner turns it on; the
+    /// choice is kept in the user defaults, and turning it off moves a flow on Programming to Car.
+    var advanced = UserDefaults.standard.bool(forKey: Flow.advancedKey) {
+        didSet {
+            UserDefaults.standard.set(advanced, forKey: Flow.advancedKey)
+            if !advanced && tab == .programming { tab = .car }
+        }
+    }
     /// The Diagnostics tab's navigation stack: empty for Fault codes, `[.mechanic]` with the mechanic pushed.
     var diagnosticsPath: [DiagnosticsRoute] = []
     let log = Log()
@@ -107,6 +116,8 @@ final class Flow {
 
     /// Where `BLELink` saves the identifier of the last adapter it connected to.
     static let adapterKey = "adapterIdentifier"
+    /// Where `advanced` is kept in the user defaults.
+    private static let advancedKey = "advanced"
     /// The app folder chosen on the Mac.
     private static let folderKey = "backupFolder"
     #if os(macOS)

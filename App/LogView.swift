@@ -64,6 +64,17 @@ struct LogButton: View {
     #endif
 }
 
+/// The toolbar slot that holds `LogButton`, left out altogether while Advanced is off so that no empty slot is left.
+struct LogToolbar: ToolbarContent {
+    @Environment(Flow.self) private var flow
+
+    var body: some ToolbarContent {
+        if flow.advanced {
+            ToolbarItem { LogButton() }
+        }
+    }
+}
+
 /// The whole log as text for Share, built only when a share actually happens.
 nonisolated struct LogText: Transferable {
     let log: Log

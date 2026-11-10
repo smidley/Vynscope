@@ -3,8 +3,9 @@ import SwiftUI
 
 /// The mechanic's settings, the Settings tab: the provider, its sign-in (the Anthropic API key, or the ChatGPT
 /// sign-in), its model, the effort of chat turns, the prices the estimates use (Anthropic's), what a conversation sends
-/// and to whom, and Clear conversations; on the Mac, last, the app folder. Every change is saved as it is made. The
-/// error, when there is one, shows under the sign-in and under Clear conversations.
+/// and to whom, and Clear conversations; on the Mac, the app folder; last, the Advanced switch. The model, effort,
+/// prices and app folder show only with Advanced on. Every change is saved as it is made. The error, when there is
+/// one, shows under the sign-in and under Clear conversations.
 struct AISettingsView: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
@@ -14,6 +15,7 @@ struct AISettingsView: View {
 
     var body: some View {
         @Bindable var ai = ai
+        @Bindable var flow = flow
         Form {
             Section("AI provider") {
                 Picker("Provider", selection: $ai.settings.provider) {
@@ -27,44 +29,46 @@ struct AISettingsView: View {
             case .anthropic: apiKeySection
             case .openai: chatGPTSection
             }
-            Section("Model") {
-                switch ai.settings.provider {
-                case .anthropic:
-                    Picker("Model", selection: $ai.settings.model) {
+            if flow.advanced {
+                Section("Model") {
+                    switch ai.settings.provider {
+                    case .anthropic:
+                        Picker("Model", selection: $ai.settings.model) {
+                            ForEach(AISettings.models, id: \.0) { model in
+                                Text(model.1).tag(model.0)
+                            }
+                        }
+                    case .openai:
+                        Picker("Model", selection: $ai.settings.openAIModel) {
+                            ForEach(ai.openAIModels, id: \.id) { model in
+                                Text(model.name).tag(Optional(model.id))
+                            }
+                        }
+                        .disabled(ai.chatGPT == nil)
+                        if ai.chatGPT == nil {
+                            Text("Sign in to see your models")
+                                .foregroundStyle(Color.vynMuted)
+                        }
+                    }
+                }
+                Section {
+                    Picker("Effort", selection: $ai.settings.effort) {
+                        ForEach(AISettings.efforts, id: \.self) { Text($0).tag($0) }
+                    }
+                } header: {
+                    Text("Effort for chat turns")
+                } footer: {
+                    Text("The health-check summary always uses high.")
+                        .font(.vyn(.footnote))
+                        .foregroundStyle(Color.vynMuted)
+                }
+                if ai.settings.provider == .anthropic {
+                    Section("Prices, dollars per million tokens") {
                         ForEach(AISettings.models, id: \.0) { model in
-                            Text(model.1).tag(model.0)
+                            PriceField(label: "\(model.1) input", value: price(model.0, \.input))
+                            PriceField(label: "\(model.1) output", value: price(model.0, \.output))
+                            PriceField(label: "\(model.1) cache read", value: price(model.0, \.cacheRead))
                         }
-                    }
-                case .openai:
-                    Picker("Model", selection: $ai.settings.openAIModel) {
-                        ForEach(ai.openAIModels, id: \.id) { model in
-                            Text(model.name).tag(Optional(model.id))
-                        }
-                    }
-                    .disabled(ai.chatGPT == nil)
-                    if ai.chatGPT == nil {
-                        Text("Sign in to see your models")
-                            .foregroundStyle(Color.vynMuted)
-                    }
-                }
-            }
-            Section {
-                Picker("Effort", selection: $ai.settings.effort) {
-                    ForEach(AISettings.efforts, id: \.self) { Text($0).tag($0) }
-                }
-            } header: {
-                Text("Effort for chat turns")
-            } footer: {
-                Text("The health-check summary always uses high.")
-                    .font(.vyn(.footnote))
-                    .foregroundStyle(Color.vynMuted)
-            }
-            if ai.settings.provider == .anthropic {
-                Section("Prices, dollars per million tokens") {
-                    ForEach(AISettings.models, id: \.0) { model in
-                        PriceField(label: "\(model.1) input", value: price(model.0, \.input))
-                        PriceField(label: "\(model.1) output", value: price(model.0, \.output))
-                        PriceField(label: "\(model.1) cache read", value: price(model.0, \.cacheRead))
                     }
                 }
             }
@@ -89,21 +93,35 @@ struct AISettingsView: View {
                 errorLine
             }
             #if os(macOS)
+            if flow.advanced {
+                Section {
+                    Text(flow.appFolder().path)
+                        .font(.vyn(.caption))
+                        .textSelection(.enabled)
+                    // As on Backups: a backup runs on into the folder it started in.
+                    Button("Choose folder") { flow.chooseFolder() }
+                        .disabled(flow.backupTask != nil)
+                } header: {
+                    Text("App folder")
+                } footer: {
+                    Text("Backups, the car book and the conversations are kept here; the log from the next launch.")
+                        .font(.vyn(.footnote))
+                        .foregroundStyle(Color.vynMuted)
+                }
+            }
+            #endif
             Section {
-                Text(flow.appFolder().path)
-                    .font(.vyn(.caption))
-                    .textSelection(.enabled)
-                // As on Backups: a backup runs on into the folder it started in.
-                Button("Choose folder") { flow.chooseFolder() }
-                    .disabled(flow.backupTask != nil)
-            } header: {
-                Text("App folder")
+                // Not while an action runs: the tabs it would hide are in use.
+                Toggle("Advanced", isOn: $flow.advanced)
+                    .disabled(flow.busy)
             } footer: {
-                Text("Backups, the car book and the conversations are kept here; the log from the next launch.")
+                Text("""
+                    Shows Programming with its modules, backups and write test, the adapter's details, raw status \
+                    bytes and the log.
+                    """)
                     .font(.vyn(.footnote))
                     .foregroundStyle(Color.vynMuted)
             }
-            #endif
         }
         .quietButtons()
         .formStyle(.grouped)
