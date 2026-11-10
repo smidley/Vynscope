@@ -43,7 +43,7 @@ Scott approved the mockup of 2026-11-10 (`.superpowers/brainstorm/30196-17943299
 - **While it runs.** One line per step. A finished step has a green check mark, the running one the pulse mark:
   - `Connecting to the adapter`, then `Adapter connected`
   - `Reading the car`, then `Car recognised · <nickname, or the VIN's last four>`
-  - `Looking for the car's systems · <n> found`, with the scan's bar; only when the car's systems are not remembered
+  - `Looking for the car's systems · <n> found`, with the scan's bar, on a walk of every address; `Checking the car's systems · <i> of <m>`, with a bar, on a walk of the remembered ones
   - the fault read's own progress words, as the fault-code screen shows them
   - `Stop`, which ends the check after the request in flight and returns the card to its state before
 - **The answer.**
@@ -98,6 +98,7 @@ The counts and rows of the answer are computed in the Core package from the faul
 - A green verdict only when every system could be read. In the last car log some systems gave no answer to the fault read, so the footnote will often say "could not be read".
 - Standard OBD codes count as one more system.
 - The first-connection hint about the five minutes and the PIN stays visible in simple mode, because pairing needs it.
+- While writing the plan: the walk of the remembered systems gets a step line of its own, since it takes about half a minute; Stop during the connecting step is today's Disconnect; the Advanced switch cannot be changed while the app is working.
 - After the builder check: a remembered system that stays silent counts as could not be read; "systems checked" counts only the systems that were read; standard codes count only when the car reported some, and a standard read the adapter failed on counts as unread; Fault codes' Read and the mechanic's health check use the remembered systems too, which changes how long they take today; the Modules screen says when its list is the remembered one.
 
 ## What Scott verifies
