@@ -447,8 +447,10 @@ final class Flow {
     }
 
     /// Keeps `report` as the car's last fault read, with the time and the remembered systems silent in the walk it
-    /// was read on: Fault codes', the check's and the mechanic's health check's.
+    /// was read on: Fault codes', the check's and the mechanic's health check's. Clears the last check's problem line,
+    /// which the newer read answers; a check whose read nothing answered sets it again after this.
     func storeFaults(_ report: HealthCheck) {
+        checkProblem = nil
         faultReport = report
         faultReadAt = .now
         faultSilent = silentSystems
@@ -459,8 +461,11 @@ final class Flow {
     /// with `checkStep` at the step it runs. Holds `busy` throughout, in a task `stopCheck()` can stop. The VIN read
     /// runs in a task of its own, which the stop does not cancel; the walk and the fault read end at their next
     /// request. A stop says nothing. A step that fails, or a car that does not answer, says so in `checkProblem`;
-    /// the error still goes through `explain(_:)` for its effects, its text to the log, and `error` stays nil.
+    /// the error still goes through `explain(_:)` for its effects, its text to the log, and `error` stays nil. An
+    /// error that ends a stopped check goes through `explain(_:)` too, and only its problem line is left out. Does
+    /// nothing while the link reconnects by itself, as `connect()`.
     func checkCar() async {
+        guard !reconnecting else { return }
         guard !busy else { error = "Still working"; return }
         busy = true
         error = nil
@@ -494,18 +499,27 @@ final class Flow {
                 step = .findingSystems
                 checkStep = step
                 try await scan(diag: diag, vin: vin, full: false)
-                guard !modules.isEmpty else { checkProblem = CheckProblem.silentCar; return }
+                guard !modules.isEmpty else {
+                    try Task.checkCancellation()  // a stop after the walk's last request says nothing
+                    checkProblem = CheckProblem.silentCar
+                    return
+                }
             }
             try Task.checkCancellation()
             step = .readingFaults
             checkStep = step
             guard try await readFaultCodes() else { throw LinkError.disconnected }
-            if faultReport?.nothingAnswered == true { checkProblem = CheckProblem.silentCar }
+            if faultReport?.nothingAnswered == true {
+                try Task.checkCancellation()  // a stop after the read's last request says nothing
+                checkProblem = CheckProblem.silentCar
+            }
         } catch {
+            // Its effects on the adapter and the car happen even when a stop ended the check.
+            let text = explain(error)
+            self.error = nil
             guard !Task.isCancelled else { return }  // stopped: the card goes back to how it was
             checkProblem = CheckProblem.line(for: error, connecting: step == .connecting)
-            log.note(explain(error))
-            self.error = nil
+            log.note(text)
         }
     }
 

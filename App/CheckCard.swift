@@ -4,7 +4,8 @@ import SwiftUI
 /// Check my car, the Car tab's first section: the car's nickname, then before a check the button and its hints;
 /// while it runs one line per step with Stop; after it the answer in a sentence with its counts, a row per system
 /// with codes and Explain it, See the codes and Check again; or a problem line with Try again, above an earlier
-/// answer. While another action holds the adapter it says what runs, and its buttons wait.
+/// answer. While another action holds the adapter it says what runs, and its buttons wait; while the link reconnects by
+/// itself it says so, and the buttons that start a check wait.
 struct CheckCard: View {
     @Environment(Flow.self) private var flow
 
@@ -16,7 +17,12 @@ struct CheckCard: View {
                 Text(nickname)
                     .font(.vyn(.headline, weight: .semibold))
             }
-            if flow.busy, flow.checkStep == nil, let other {
+            if flow.reconnecting, flow.checkStep == nil {
+                HStack {
+                    PulseMark(size: 14)
+                    Text("Reconnecting to the adapter…")
+                }
+            } else if flow.busy, flow.checkStep == nil, let other {
                 HStack {
                     PulseMark(size: 14)
                     Text(other)
@@ -30,14 +36,14 @@ struct CheckCard: View {
                         .foregroundStyle(Color.vynInk)
                     Button("Try again", action: check)
                         .primaryAction()
-                        .disabled(flow.busy)
+                        .disabled(cannotCheck)
                 }
                 if let verdict, !verdict.nothingAnswered {
                     answer(verdict, filled: problem == nil)
                 } else if problem == nil {
                     Button("Check my car", action: check)
                         .primaryAction()
-                        .disabled(flow.busy)
+                        .disabled(cannotCheck)
                     hint("Plug in the adapter and switch the ignition on. Nothing on the car is changed.")
                     if UserDefaults.standard.string(forKey: Flow.adapterKey) == nil {
                         hint("""
@@ -51,6 +57,10 @@ struct CheckCard: View {
     }
 
     private func check() { Task { await flow.checkCar() } }
+
+    /// Whether the buttons that start a check wait: while something holds the adapter, or the link reconnects by
+    /// itself, when `checkCar()` does nothing.
+    private var cannotCheck: Bool { flow.busy || flow.reconnecting }
 
     /// What another action holding the adapter is doing: connecting, as at launch, else the flow's activity.
     private var other: String? {
@@ -141,7 +151,7 @@ struct CheckCard: View {
         }
         .disabled(flow.busy)
         Button("Check again", action: check)
-            .disabled(flow.busy)
+            .disabled(cannotCheck)
     }
 
     private func explain() {
