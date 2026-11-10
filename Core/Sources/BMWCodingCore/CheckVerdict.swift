@@ -14,8 +14,9 @@ public struct CheckVerdict: Equatable, Sendable {
     public let rows: [Row]
     public let nothingAnswered: Bool
 
-    /// No codes, every system read, and something answered: the only verdict shown in green.
-    public var clean: Bool { codes == 0 && unread == 0 && !nothingAnswered }
+    /// No codes, every system read, at least one system read, and something answered: the only verdict shown in
+    /// green. A read of no system at all is never clean, even when the standard read answered without codes.
+    public var clean: Bool { codes == 0 && unread == 0 && read > 0 && !nothingAnswered }
 
     public struct Row: Equatable, Sendable {
         public let name: String

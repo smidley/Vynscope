@@ -75,6 +75,27 @@ private func obd(stored: [String: [String]] = [:], pending: [String: [String]] =
     #expect(verdict.nothingAnswered && !verdict.clean)
 }
 
+@Test func aReadOfNoSystemIsNeverClean() {
+    let verdict = report(obd: obd()).verdict()
+    #expect(verdict.read == 0 && verdict.unread == 0 && verdict.codes == 0 && !verdict.nothingAnswered)
+    #expect(!verdict.clean)
+}
+
+@Test func standardCodesAndAnUnreadSystemAreBothCounted() {
+    let verdict = report(
+        modules: [module("01", faults: []), module("56", faultRead: "refused (0x11)")],
+        obd: obd(stored: ["7E8": ["P0A1F"]])).verdict()
+    #expect(verdict.codes == 1 && verdict.systemsWithCodes == 1 && verdict.read == 1 && verdict.unread == 1)
+    #expect(verdict.rows == [.init(name: "Standard codes", chips: [.stored])])
+    #expect(!verdict.clean)
+}
+
+@Test func silentSystemsAndAReadInWhichNothingAnswered() {
+    let verdict = report(modules: [module("01", faultRead: "no answer")]).verdict(silent: 2)
+    #expect(verdict.read == 0 && verdict.unread == 3 && verdict.nothingAnswered)
+    #expect(!verdict.clean)
+}
+
 @Test func aStatusThatIsNotAByteHasNoChipAndStillCounts() {
     let verdict = report(modules: [module("56", faults: [.init(code: "E1C441", status: "zz")])]).verdict()
     #expect(verdict.codes == 1 && verdict.rows == [.init(name: "System 0x56", chips: [])])
@@ -84,7 +105,8 @@ private func obd(stored: [String: [String]] = [:], pending: [String: [String]] =
     func line(_ error: any Error, _ connecting: Bool = false) -> String {
         CheckProblem.line(for: error, connecting: connecting)
     }
-    #expect(line(LinkError.adapterError("Bluetooth is off. Switch it on and reconnect.")) == "Bluetooth is off. Switch it on and try again.")
+    #expect(line(LinkError.adapterError("Bluetooth is off. Switch it on and reconnect."))
+        == "Bluetooth is off. Switch it on and try again.")
     #expect(line(LinkError.adapterError("Bluetooth is not allowed for this app"))
         == "Vynscope is not allowed to use Bluetooth. Allow it in Settings and try again.")
     #expect(line(LinkError.adapterError("This device does not support Bluetooth LE"))
