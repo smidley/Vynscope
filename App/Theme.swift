@@ -12,7 +12,7 @@ extension Color {
 /// A screen's one primary action against its quiet ones.
 extension View {
     /// A filled button in the darker orange with paper text on it, which reads at 4.5 to 1 in both appearances. One
-    /// per screen: Connect, Read fault codes, Scan, Run health check, Back up, Send.
+    /// per screen: Check my car, Read fault codes, Scan, Run health check, Back up, Send.
     func primaryAction() -> some View {
         buttonStyle(.borderedProminent)
             .tint(Color.vynOrangeDark)

@@ -96,7 +96,7 @@ struct FaultCodesView: View {
         .connectionLine()
         .toolbar {
             ToolbarItem {
-                NavigationLink("Ask the mechanic") { MechanicView() }
+                NavigationLink("Ask the mechanic", value: DiagnosticsRoute.mechanic)
             }
         }
     }
@@ -132,12 +132,7 @@ private struct FaultRow: View {
                 .font(.vynMono(.body))
                 .foregroundStyle(Color.vynInk)
             if let chip {
-                Text(chip.rawValue)
-                    .font(.vyn(.caption, weight: .medium))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .foregroundStyle(chip == .old ? Color.vynInk : Color.vynPaper)
-                    .background(Self.fill(chip), in: .rect(cornerRadius: 4))
+                FaultChipLabel(chip: chip)
             }
             if let status {
                 Spacer()
@@ -146,6 +141,20 @@ private struct FaultRow: View {
                     .foregroundStyle(Color.vynMuted)
             }
         }
+    }
+}
+
+/// A fault chip, as the fault codes and the check's answer draw it: its name in a small filled tag.
+struct FaultChipLabel: View {
+    let chip: FaultChip
+
+    var body: some View {
+        Text(chip.rawValue)
+            .font(.vyn(.caption, weight: .medium))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .foregroundStyle(chip == .old ? Color.vynInk : Color.vynPaper)
+            .background(Self.fill(chip), in: .rect(cornerRadius: 4))
     }
 
     /// Active red, pending the darker orange, stored ink, old the line color: paper text on the first three, ink on

@@ -1,14 +1,15 @@
 import SwiftUI
 
-/// The adapter and the car: the adapter's state and what it says it is, Connect, Reconnect while a car is known and
-/// the link gave up or its adapter was dropped, Disconnect and Forget adapter; then Read, the VIN with a field to give
-/// or change the car's nickname, and the other cars on file.
+/// Check my car's card first, then the adapter and the car: the adapter's state and what it says it is, Connect,
+/// Reconnect while a car is known and the link gave up or its adapter was dropped, Disconnect and Forget adapter; then
+/// Read, the VIN with a field to give or change the car's nickname, and the other cars on file.
 struct CarTab: View {
     @Environment(Flow.self) private var flow
     @Environment(AIFlow.self) private var ai
 
     var body: some View {
         Form {
+            CheckCard()
             if let error = flow.error {
                 Section {
                     Text(error).foregroundStyle(Color.vynRed)
@@ -44,8 +45,8 @@ struct CarTab: View {
                 }
             }
             Section {
+                // Quiet: the check card's button is the screen's filled action.
                 Button("Connect") { Task { await flow.connect() } }
-                    .primaryAction()
                     .disabled(flow.busy || flow.reconnecting)
                 // A car is known and the link gave up, or an action's error dropped its adapter (`Flow.explain`).
                 // With no car, Connect alone is offered: it reads the car.

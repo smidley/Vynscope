@@ -47,8 +47,9 @@ struct VynscopeApp: App {
     }
 }
 
-/// The four tabs, a navigation stack each: a tab bar on the iPhone, a sidebar on the Mac. The iPhone's Log sheet
-/// opens over whichever tab is on screen. At launch it connects to the saved adapter by itself.
+/// The four tabs, a navigation stack each: a tab bar on the iPhone, a sidebar on the Mac. The Diagnostics stack follows
+/// `Flow.diagnosticsPath`, which the check's Explain it and See the codes set. The iPhone's Log sheet opens over
+/// whichever tab is on screen. At launch it connects to the saved adapter by itself.
 struct RootView: View {
     @Environment(Flow.self) private var flow
     @State private var programmingPath = NavigationPath()
@@ -62,7 +63,10 @@ struct RootView: View {
                 NavigationStack { CarTab().tabRoot("Car") }
             }
             Tab("Diagnostics", systemImage: "stethoscope", value: .diagnostics) {
-                NavigationStack { FaultCodesView().tabRoot("Fault codes") }
+                NavigationStack(path: $flow.diagnosticsPath) {
+                    FaultCodesView().tabRoot("Fault codes")
+                        .navigationDestination(for: DiagnosticsRoute.self) { _ in MechanicView() }
+                }
             }
             Tab("Programming", systemImage: "cpu", value: .programming) {
                 NavigationStack(path: $programmingPath) { ModulesView().tabRoot("Modules") }
