@@ -3,6 +3,7 @@
 xcuserdata/
 *.xcuserstate
 build/
+build-ios/
 Vynscope.xcodeproj/
 .swiftpm/
 *.xcuserdatad/

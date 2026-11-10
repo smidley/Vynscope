@@ -50,3 +50,28 @@ import Testing
     // 300 = 0x12C: the high nibble 1 sits in the PCI byte, the low byte 0x2C follows
     #expect(ISOTP.reassemble([[0xF1, 0x11, 0x2C, 0x62, 0xF1, 0x90, 0x57, 0x42]]) == .needFlowControl(expectedLength: 300))
 }
+
+private let write13: [UInt8] = [0x2E, 0x30, 0x00] + Array(0x01...0x0A)
+
+@Test func firstFrameCarriesTheLengthAndFiveBytes() {
+    #expect(ISOTP.firstFrame(to: 0x56, payload: write13) == [0x56, 0x10, 0x0D, 0x2E, 0x30, 0x00, 0x01, 0x02])
+}
+
+@Test func consecutiveFramesCarrySixBytesEachFromSequenceOne() {
+    #expect(ISOTP.consecutiveFrames(to: 0x56, payload: write13) == [
+        [0x56, 0x21, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+        [0x56, 0x22, 0x09, 0x0A, 0x00, 0x00, 0x00, 0x00]])
+}
+
+@Test func sequenceGoesFromFBackToZero() {
+    let frames = ISOTP.consecutiveFrames(to: 0x56, payload: [UInt8](repeating: 0xAB, count: 5 + 6 * 17))
+    #expect(frames.map { $0[1] } == Array(0x21...0x2F) + [0x20, 0x21])
+}
+
+@Test func readsFlowControl() {
+    #expect(ISOTP.flowControl([0xF1, 0x30, 0x08, 0x14, 0, 0, 0, 0])
+        == ISOTP.FlowControl(status: 0, blockSize: 8, separationTime: 0x14))
+    #expect(ISOTP.flowControl([0xF1, 0x32, 0x00, 0x00])?.status == 2)
+    #expect(ISOTP.flowControl([0xF1, 0x03, 0x6E, 0x30]) == nil)
+    #expect(ISOTP.flowControl([0xF1, 0x30, 0x00]) == nil)
+}

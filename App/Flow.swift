@@ -12,6 +12,16 @@ enum AppTab: Hashable {
     case car, diagnostics, programming, settings
 }
 
+/// How a module's write test ended, for the module screen.
+enum WriteTestResult {
+    /// The check against the backup found a reason not to write; never `.ready`.
+    case preparation(WriteTest.Preparation)
+    case outcome(WriteTest.Outcome)
+    /// Stopped by the owner or by a link error (`why`) after `done` of `total` identifiers were confirmed; `total` is 0
+    /// when it stopped before there were identifiers to write, as for a module no longer listed.
+    case stopped(done: Int, total: Int, why: String?)
+}
+
 /// The state behind the tabs and the actions that talk to the car. The adapter takes one request at a time, so
 /// every action that uses `diag` holds `busy` while it runs, and one that finds `busy` set only says so in `error`.
 @Observable @MainActor
@@ -52,6 +62,19 @@ final class Flow {
     /// The fault read `readFaults()` runs, which `stopScan()` stops.
     @ObservationIgnored private var readTask: Task<Void, Never>?
 
+    /// The write test waiting for the owner's go-ahead; the module screen shows its confirmation while this is set.
+    var writeTestReady: WriteTest.Ready?
+    /// The identifiers written back and the number to write, while a write test runs; nil otherwise.
+    var writeTestProgress: (done: Int, total: Int)?
+    /// The module the write test is checking against its backup, or has ready, or writes; nil otherwise.
+    var writeTestModule: DiscoveredModule?
+    /// Whether the write test is reading the module to check it against the backup.
+    var writeTestChecking = false
+    /// How each module's write test ended in this session, by address.
+    var writeTestResults: [UInt8: WriteTestResult] = [:]
+    /// The write run in progress, which `stopWriteTest()` stops.
+    @ObservationIgnored private var writeTestTask: Task<Void, Never>?
+
     /// Where `BLELink` saves the identifier of the last adapter it connected to.
     static let adapterKey = "adapterIdentifier"
     /// The app folder chosen on the Mac.
@@ -89,12 +112,18 @@ final class Flow {
     }
 
     /// What runs now, for the connection line: the fault read at its step, else the scan, at the address it is at with
-    /// the modules that answered so far, else the backup, at the module it reads; nil while none runs.
+    /// the modules that answered so far, else the backup, at the module it reads, else the write test, checking its
+    /// module against the backup or at the identifier it writes back; nil while none runs.
     var activity: String? {
         if let readingFaults { return readingFaults }
         if discovering { return "Scanning \(String(format: "%02X", scanned)) of FF · \(modules.count) answered" }
         if backupTask != nil, let progress {
             return "Backing up · module \(progress.moduleIndex + 1) of \(progress.moduleCount)"
+        }
+        if let writeTestModule {
+            let name = writeTestModule.description ?? writeTestModule.title
+            if let (done, total) = writeTestProgress { return "Write test · identifier \(done + 1) of \(total) · \(name)" }
+            if writeTestChecking { return "Write test · checking \(name)" }
         }
         return nil
     }
@@ -190,6 +219,8 @@ final class Flow {
         lastBackup = nil
         faultReport = nil
         faultReadAt = nil
+        writeTestReady = nil
+        writeTestResults = [:]
     }
 
     /// Read on the Car tab: stops a scan `discover()` started, then reads the car with `readVIN`. A scan run inside
@@ -326,6 +357,89 @@ final class Flow {
         await task.value
     }
 
+    /// Checks the module at `address`, as `modules` lists it, against the car's newest complete backup of it with
+    /// `WriteTest.prepare`, which writes nothing, holding `busy` while it reads. When everything agrees
+    /// `writeTestReady` is set, which shows the confirmation; otherwise the result says why not, in
+    /// `writeTestResults`, as it does when the module is no longer listed.
+    func prepareWriteTest(_ address: UInt8) async {
+        guard let diag, let vin, !gaveUp else { error = "Not connected"; return }
+        guard !busy else { error = "Still working"; return }
+        guard let module = modules.first(where: { $0.address == address }) else {
+            writeTestResults[address] = .stopped(done: 0, total: 0, why: "The module is no longer listed")
+            return
+        }
+        busy = true
+        defer { busy = false }
+        error = nil
+        writeTestResults[module.address] = nil
+        writeTestModule = module
+        writeTestChecking = true
+        defer { writeTestChecking = false }
+        do {
+            let reference = newestBackup(complete: module.address)
+            switch try await WriteTest.prepare(diag: diag, module: module, vin: vin, reference: reference) {
+            case .ready(let ready): writeTestReady = ready
+            case let other: writeTestResults[module.address] = .preparation(other)
+            }
+        } catch {
+            self.error = explain(error)
+        }
+        if writeTestReady == nil { writeTestModule = nil }
+    }
+
+    /// Writes the module's coding back with `WriteTest.run`, for `ready` as the confirmation holds it, holding `busy`,
+    /// in a task `stopWriteTest()` can stop, with `writeTestProgress` following it. The result is kept in
+    /// `writeTestResults`: how the run ended, or a stop after the last identifier confirmed, or a link error's text.
+    /// None is kept when the car was forgotten during the run, so no other car's module shows it.
+    func confirmWriteTest(_ ready: WriteTest.Ready) async {
+        guard let diag, let vin, !gaveUp else { error = "Not connected"; return }
+        guard !busy else { error = "Still working"; return }
+        guard let module = modules.first(where: { $0.address == ready.address }) else {
+            writeTestReady = nil
+            writeTestModule = nil
+            writeTestResults[ready.address] = .stopped(
+                done: 0, total: ready.identifiers.count, why: "The module is no longer listed")
+            return
+        }
+        busy = true
+        writeTestModule = module
+        error = nil
+        writeTestReady = nil
+        writeTestProgress = (0, ready.identifiers.count)
+        let task = Task {
+            defer { busy = false; writeTestProgress = nil; writeTestModule = nil }
+            let result: WriteTestResult
+            do {
+                let outcome = try await keepingAwake("Writing back a module's coding") {
+                    try await WriteTest.run(diag: diag, module: module, vin: vin, ready: ready) {
+                        self.writeTestProgress = ($0, $1)
+                    }
+                }
+                result = .outcome(outcome)
+            } catch is CancellationError {
+                result = .stopped(done: writeTestProgress?.done ?? 0, total: ready.identifiers.count, why: nil)
+            } catch {
+                let done = writeTestProgress?.done ?? 0
+                let why = explain(error)  // first: it forgets the car when another one answered, which the check sees
+                result = .stopped(done: done, total: ready.identifiers.count, why: why)
+            }
+            guard self.vin == vin else { return }  // the car was forgotten, and its results with it
+            writeTestResults[module.address] = result
+        }
+        writeTestTask = task
+        await task.value
+    }
+
+    /// Drops the prepared write test: Cancel on the confirmation.
+    func cancelWriteTest() {
+        guard writeTestProgress == nil else { return }  // Confirm dismisses the dialog too, after it started the run
+        writeTestReady = nil
+        writeTestModule = nil
+    }
+
+    /// Stops the write run in progress; it ends after the identifier it is on.
+    func stopWriteTest() { writeTestTask?.cancel() }
+
     /// Stops the scan or the fault read in progress; a backup has its own Cancel.
     func stopScan() { discoveryTask?.cancel(); readTask?.cancel() }
 
@@ -396,6 +510,13 @@ final class Flow {
     func latestBackup() -> Backup? {
         guard let vin else { return nil }
         return try? BackupStore(directory: file("Backups")).latest(forVIN: vin)
+    }
+
+    /// The newest backup of the car whose VIN was read in which the module at `address` is complete, or nil when there
+    /// is none: the write test's reference.
+    func newestBackup(complete address: UInt8) -> Backup? {
+        guard let vin else { return nil }
+        return try? BackupStore(directory: file("Backups")).newest(forVIN: vin, complete: address)
     }
 
     /// Whether a backup now sweeps every listed module in full, which takes about an hour: none of them has a set
@@ -499,6 +620,7 @@ final class Flow {
         case DiagError.differentCar: "A different car answered after the reconnect"
         case DiagError.carSilent: "The car did not answer after the adapter reconnected. Is the ignition on?"
         case DiagError.keptDropping: "The adapter kept dropping. Reconnect when it is in range."
+        case DiagError.notAllowed: "Not sent: only the standard OBD reads, modes 01, 03, 07 and 09, go to every module"
         case VINError.noVIN: "No module answered with a VIN. Is the ignition on?"
         default: error.localizedDescription
         }

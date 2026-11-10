@@ -9,13 +9,14 @@ public struct DiscoveredModule: Identifiable, Equatable, Sendable {
     public let description: String?
     /// Whether the module's coding is signed (`ModuleTable.isSigned`), so the app must never write it.
     public let signed: Bool
-    /// The data of every identification read the module answered positively, by identifier.
-    public var identification: [UInt16: [UInt8]]
+    /// The data of every identification read the module answered positively, by identifier. Like the three fields
+    /// below, only Core sets it, so the write test's coding-file pin only ever sees what discovery read.
+    public internal(set) var identification: [UInt16: [UInt8]]
     /// From the installed-software table: the coding files, and the hardware and software versions.
     /// Empty and `nil` when the module did not give the table.
-    public var codingFiles: [String]
-    public var hardware: String?
-    public var software: String?
+    public internal(set) var codingFiles: [String]
+    public internal(set) var hardware: String?
+    public internal(set) var software: String?
     /// True when the module answered the first identification read over UDS, even with a negative response;
     /// false when it only confirmed TesterPresent.
     public var answeredIdentification: Bool

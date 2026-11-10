@@ -20,14 +20,17 @@ public struct SVKEntry: Equatable, Sendable {
 }
 
 public enum SVK {
-    /// The entries of a module's installed-software table. First guess at the layout, to be confirmed on the car:
-    /// a status byte and an entry-count byte, then 8-byte entries
-    /// `[class][id, 4 bytes big-endian][main][sub][patch]`. The count byte is not trusted: every whole entry in
-    /// the bytes present is read and a partial one at the end is dropped, so a payload without both header
-    /// bytes has no entries.
+    /// The entries of a module's installed-software table. Confirmed on the i4 on 2026-11-04: payload bytes 2 and 3
+    /// are the entry count, big-endian, and the entries are the payload's last count x 8 bytes, each
+    /// `[class][id, 4 bytes big-endian][main][sub][patch]`. What sits before them is a header of varying length
+    /// (17 bytes on 20 modules, 8 on 6), so the entries are counted back from the end rather than from the front.
+    /// This rule fits all 26 modules read. A payload shorter than 4 bytes plus its entries has none.
     public static func parse(_ payload: [UInt8]) -> [SVKEntry] {
-        let table = Array(payload.dropFirst(2))
-        return (0..<table.count / 8).map { n in
+        guard payload.count >= 4 else { return [] }
+        let count = Int(payload[2]) << 8 | Int(payload[3])
+        guard payload.count >= 4 + count * 8 else { return [] }
+        let table = Array(payload.suffix(count * 8))
+        return (0..<count).map { n in
             let e = Array(table[n * 8..<(n + 1) * 8])
             return SVKEntry(processClass: e[0], id: e[1...4].reduce(0) { ($0 << 8) | UInt32($1) },
                             main: e[5], sub: e[6], patch: e[7])

@@ -109,9 +109,22 @@ public struct BackupStore {
     /// The newest backup of the car with this VIN, or `nil` when there is none. A file that cannot be read or
     /// decoded is passed over, as is one for another car.
     public func latest(forVIN vin: String) throws -> Backup? {
+        try newest { $0.vin == vin }
+    }
+
+    /// The newest backup of the car with this VIN in which the module at `address` is complete; nil when none is.
+    /// Files are passed over as for `latest(forVIN:)`. The write test checks a module against this one.
+    public func newest(forVIN vin: String, complete address: UInt8) throws -> Backup? {
+        try newest { backup in
+            backup.vin == vin && backup.modules.contains { $0.address == address && $0.status == .complete }
+        }
+    }
+
+    /// The newest backup that `matches`, or `nil`; a file that cannot be read or decoded is passed over.
+    private func newest(where matches: (Backup) -> Bool) throws -> Backup? {
         for url in try list() {
             guard let backup = try? JSONDecoder().decode(Backup.self, from: Data(contentsOf: url)) else { continue }
-            if backup.vin == vin { return backup }
+            if matches(backup) { return backup }
         }
         return nil
     }
