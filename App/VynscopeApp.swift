@@ -47,8 +47,12 @@ struct VynscopeApp: App {
     }
 }
 
-/// The four tabs, a navigation stack each: a tab bar on the iPhone, a sidebar on the Mac. The iPhone's Log sheet
-/// opens over whichever tab is on screen. At launch it connects to the saved adapter by itself.
+/// The four tabs, a navigation stack each, Programming only with Advanced on: a tab bar on the iPhone, a sidebar on the
+/// Mac. The Diagnostics stack follows `Flow.diagnosticsPath`, which the check's Explain it and See the codes set. The
+/// iPhone's Log sheet opens over whichever tab is on screen. With Advanced on, at launch it connects to the saved
+/// adapter by itself; with Advanced off it does not, and the check connects when it is tapped, because a connect
+/// nobody asked for fails in technical words on the first screen whenever the adapter is out of reach, and forgets
+/// the saved adapter.
 struct RootView: View {
     @Environment(Flow.self) private var flow
     @State private var programmingPath = NavigationPath()
@@ -62,13 +66,18 @@ struct RootView: View {
                 NavigationStack { CarTab().tabRoot("Car") }
             }
             Tab("Diagnostics", systemImage: "stethoscope", value: .diagnostics) {
-                NavigationStack { FaultCodesView().tabRoot("Fault codes") }
+                NavigationStack(path: $flow.diagnosticsPath) {
+                    FaultCodesView().tabRoot("Fault codes")
+                        .navigationDestination(for: DiagnosticsRoute.self) { _ in MechanicView() }
+                }
             }
-            Tab("Programming", systemImage: "cpu", value: .programming) {
-                NavigationStack(path: $programmingPath) { ModulesView().tabRoot("Modules") }
-                    // A different car pops the old car's module detail; its coding would otherwise reload from this
-                    // car's backup.
-                    .onChange(of: flow.vin) { programmingPath = NavigationPath() }
+            if flow.advanced {
+                Tab("Programming", systemImage: "cpu", value: .programming) {
+                    NavigationStack(path: $programmingPath) { ModulesView().tabRoot("Modules") }
+                        // A different car pops the old car's module detail; its coding would otherwise reload from
+                        // this car's backup.
+                        .onChange(of: flow.vin) { programmingPath = NavigationPath() }
+                }
             }
             Tab("Settings", systemImage: "gear", value: .settings) {
                 NavigationStack { AISettingsView().tabRoot("Settings") }
@@ -77,10 +86,12 @@ struct RootView: View {
         .tabViewStyle(.sidebarAdaptable)
         .task {
             // Once per launch, not per window: after that, connecting again is the owner's to ask for, after a
-            // Disconnect, a give-up or a Reconnect that failed.
+            // Disconnect, a give-up or a Reconnect that failed. Only with Advanced on: with it off the check connects
+            // when tapped, as a connect nobody asked for fails in technical words on the first screen whenever the
+            // adapter is out of reach, and forgets the saved adapter.
             guard !flow.autoConnectAttempted else { return }
             flow.autoConnectAttempted = true
-            if flow.link.state == .off, flow.adapter == nil,
+            if flow.advanced, flow.link.state == .off, flow.adapter == nil,
                UserDefaults.standard.string(forKey: Flow.adapterKey) != nil {
                 await flow.connect()
             }
@@ -94,12 +105,12 @@ struct RootView: View {
 }
 
 private extension View {
-    /// A tab's root screen: its title inline and Log in the toolbar, over ivory that reaches under the bar, where the
-    /// navigation stack paints its own background over the window's.
+    /// A tab's root screen: its title inline and, with Advanced on, Log in the toolbar, over ivory that reaches under
+    /// the bar, where the navigation stack paints its own background over the window's.
     func tabRoot(_ title: LocalizedStringKey) -> some View {
         navigationTitle(title)
             .toolbarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem { LogButton() } }
+            .toolbar { LogToolbar() }
             .background(Color.vynIvory)
     }
 }

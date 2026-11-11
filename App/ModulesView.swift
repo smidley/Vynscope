@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The Programming tab's root: Backups, with the date of the car's newest backup, then the modules that answer the
 /// scan, listed as they answer; a module's row opens its detail. Scan, or Rescan once modules are listed, in the
-/// toolbar.
+/// toolbar, looks at every address. A list that came from a quick walk of the remembered systems says so in a note.
 struct ModulesView: View {
     @Environment(Flow.self) private var flow
     /// The car's newest backup, for the Backups row. Read when the screen appears and when the car or
@@ -25,6 +25,11 @@ struct ModulesView: View {
             if flow.discovering, flow.modules.isEmpty {
                 SkeletonRows()
             }
+            if !flow.modules.isEmpty, !flow.modulesFromFullWalk, !flow.discovering {
+                Text("The systems remembered for this car. Rescan looks at every address again.")
+                    .font(.vyn(.footnote))
+                    .foregroundStyle(Color.vynMuted)
+            }
             ForEach(flow.modules) { module in
                 NavigationLink(value: module) {
                     ModuleRow(title: module.title, description: module.description, signed: module.signed)
@@ -38,7 +43,7 @@ struct ModulesView: View {
         .navigationDestination(for: DiscoveredModule.self) { ModuleDetailView(module: $0) }
         .toolbar {
             ToolbarItem {
-                Button(flow.modules.isEmpty ? "Scan" : "Rescan") { Task { await flow.discover() } }
+                Button(flow.modules.isEmpty ? "Scan" : "Rescan") { Task { await flow.discover(full: true) } }
                     .primaryAction()
                     .disabled(flow.busy || flow.diag == nil || flow.gaveUp || flow.vin == nil)
             }
@@ -47,7 +52,7 @@ struct ModulesView: View {
             if flow.modules.isEmpty, !flow.discovering, !flow.busy, flow.diag != nil, flow.vin != nil,
                flow.vin != flow.autoScannedVIN {
                 flow.autoScannedVIN = flow.vin
-                await flow.discover()
+                await flow.discover(full: true)
             }
         }
         .task(id: [flow.vin, flow.lastBackup?.path]) { latest = flow.latestBackup() }

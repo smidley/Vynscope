@@ -455,8 +455,7 @@ final class AIFlow {
                     check = report
                 } else {
                     check = try await mechanic.healthCheck { phase = .checking($0) }
-                    flow.faultReport = check
-                    flow.faultReadAt = .now
+                    flow.storeFaults(check)
                 }
                 guard !check.nothingAnswered else {
                     // An ignition that is off: no conversation, no model turn; Run health check stays on offer.

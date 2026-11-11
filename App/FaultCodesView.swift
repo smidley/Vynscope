@@ -96,7 +96,7 @@ struct FaultCodesView: View {
         .connectionLine()
         .toolbar {
             ToolbarItem {
-                NavigationLink("Ask the mechanic") { MechanicView() }
+                NavigationLink("Ask the mechanic", value: DiagnosticsRoute.mechanic)
             }
         }
     }
@@ -120,8 +120,9 @@ struct FaultCodesView: View {
 }
 
 /// A fault code in mono and its chip, then, at the row's end so the bytes line up, the raw status byte in muted mono
-/// when the code came with one. A status that is not a byte has no chip.
+/// when the code came with one and Advanced is on. A status that is not a byte has no chip.
 private struct FaultRow: View {
+    @Environment(Flow.self) private var flow
     let code: String
     let chip: FaultChip?
     var status: String?
@@ -132,20 +133,29 @@ private struct FaultRow: View {
                 .font(.vynMono(.body))
                 .foregroundStyle(Color.vynInk)
             if let chip {
-                Text(chip.rawValue)
-                    .font(.vyn(.caption, weight: .medium))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .foregroundStyle(chip == .old ? Color.vynInk : Color.vynPaper)
-                    .background(Self.fill(chip), in: .rect(cornerRadius: 4))
+                FaultChipLabel(chip: chip)
             }
-            if let status {
+            if flow.advanced, let status {
                 Spacer()
                 Text(status)
                     .font(.vynMono(.caption))
                     .foregroundStyle(Color.vynMuted)
             }
         }
+    }
+}
+
+/// A fault chip, as the fault codes and the check's answer draw it: its name in a small filled tag.
+struct FaultChipLabel: View {
+    let chip: FaultChip
+
+    var body: some View {
+        Text(chip.rawValue)
+            .font(.vyn(.caption, weight: .medium))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .foregroundStyle(chip == .old ? Color.vynInk : Color.vynPaper)
+            .background(Self.fill(chip), in: .rect(cornerRadius: 4))
     }
 
     /// Active red, pending the darker orange, stored ink, old the line color: paper text on the first three, ink on

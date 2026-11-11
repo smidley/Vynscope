@@ -22,12 +22,33 @@ enum WriteTestResult {
     case stopped(done: Int, total: Int, why: String?)
 }
 
+/// A step of Check my car, in the order the check runs them; a step the car does not need is skipped.
+enum CheckStep: Equatable {
+    case connecting, readingCar, findingSystems, readingFaults
+}
+
+/// A screen pushed on the Diagnostics tab's stack: the mechanic, from Fault codes or the check's Explain it.
+enum DiagnosticsRoute: Hashable {
+    case mechanic
+}
+
 /// The state behind the tabs and the actions that talk to the car. The adapter takes one request at a time, so
 /// every action that uses `diag` holds `busy` while it runs, and one that finds `busy` set only says so in `error`.
 @Observable @MainActor
 final class Flow {
     /// The tab on screen. A reconnect that failed and a different car go back to Car.
     var tab = AppTab.car
+    /// Whether the screens and controls that need car knowledge are shown: Programming, the adapter's details, raw
+    /// status bytes, the log and the model, effort, price and folder settings. Off until the owner turns it on; the
+    /// choice is kept in the user defaults, and turning it off moves a flow on Programming to Car.
+    var advanced = UserDefaults.standard.bool(forKey: Flow.advancedKey) {
+        didSet {
+            UserDefaults.standard.set(advanced, forKey: Flow.advancedKey)
+            if !advanced && tab == .programming { tab = .car }
+        }
+    }
+    /// The Diagnostics tab's navigation stack: empty for Fault codes, `[.mechanic]` with the mechanic pushed.
+    var diagnosticsPath: [DiagnosticsRoute] = []
     let log = Log()
     let link: BLELink
     var diag: Diag?
@@ -38,14 +59,35 @@ final class Flow {
     var otherCars: [CarRecord] = []
     var modules: [DiscoveredModule] = []
     var discovering = false
-    /// The module address the scan is at, 0...255; Modules and Backups draw it as progress.
+    /// How far the scan is: the module address it is at, 0...255, on a walk of every address; the number of remembered
+    /// systems already asked, 0..<`scanTotal`, on a quick walk. Modules and Backups draw it as progress.
     var scanned = 0
+    /// Whether the scan in progress covers only the car's remembered systems; false while none runs.
+    var scanQuick = false
+    /// What `scanned` counts up to: 255 on a walk of every address, the number of remembered systems on a quick one.
+    var scanTotal = 255
+    /// What a quick walk says it is doing, at the remembered system it asks: the connection line's, the Modules and
+    /// Backups progress's and the check card's words.
+    var quickWalkWords: String { "Checking the car's systems · \(scanned + 1) of \(scanTotal)" }
+    /// Whether `modules` came from a walk of every address that found at least one module, rather than from a quick
+    /// walk of the remembered systems.
+    var modulesFromFullWalk = false
+    /// The remembered systems that did not answer the last walk that ended, of either kind; the check counts them as
+    /// systems it could not read.
+    var silentSystems = 0
     var progress: BackupProgress?
     var lastBackup: URL?
     /// The last fault read of the car, from Fault codes or the mechanic's health check.
     var faultReport: HealthCheck?
     /// When `faultReport` was read; set with it.
     var faultReadAt: Date?
+    /// The remembered systems that stayed silent in the walk `faultReport` was read on, as `silentSystems` was then;
+    /// set with it, so that a later walk does not change what the read missed.
+    var faultSilent = 0
+    /// The step Check my car is at; nil while no check runs.
+    var checkStep: CheckStep?
+    /// The last check's problem in plain words, from `CheckProblem`; cleared when a check starts, left nil by a stop.
+    var checkProblem: String?
     /// What the fault read in progress is doing; nil while none runs.
     var readingFaults: String?
     var error: String?
@@ -61,6 +103,8 @@ final class Flow {
     @ObservationIgnored private var discoveryTask: Task<Void, Never>?
     /// The fault read `readFaults()` runs, which `stopScan()` stops.
     @ObservationIgnored private var readTask: Task<Void, Never>?
+    /// The check `checkCar()` runs, which `stopCheck()` stops.
+    @ObservationIgnored private var checkTask: Task<Void, Never>?
 
     /// The write test waiting for the owner's go-ahead; the module screen shows its confirmation while this is set.
     var writeTestReady: WriteTest.Ready?
@@ -77,6 +121,8 @@ final class Flow {
 
     /// Where `BLELink` saves the identifier of the last adapter it connected to.
     static let adapterKey = "adapterIdentifier"
+    /// Where `advanced` is kept in the user defaults.
+    private static let advancedKey = "advanced"
     /// The app folder chosen on the Mac.
     private static let folderKey = "backupFolder"
     #if os(macOS)
@@ -111,11 +157,14 @@ final class Flow {
         if case .failed = link.state { true } else { false }
     }
 
-    /// What runs now, for the connection line: the fault read at its step, else the scan, at the address it is at with
-    /// the modules that answered so far, else the backup, at the module it reads, else the write test, checking its
-    /// module against the backup or at the identifier it writes back; nil while none runs.
+    /// What runs now, for the connection line: Checking the car while the check connects or reads the car, else the
+    /// fault read at its step, else the scan, at the address it is at with the modules that answered so far, or on a
+    /// quick walk at the remembered system it is asking, else the backup, at the module it reads, else the write test,
+    /// checking its module against the backup or at the identifier it writes back; nil while none runs.
     var activity: String? {
+        if checkStep == .connecting || checkStep == .readingCar { return "Checking the car" }
         if let readingFaults { return readingFaults }
+        if discovering && scanQuick { return quickWalkWords }
         if discovering { return "Scanning \(String(format: "%02X", scanned)) of FF · \(modules.count) answered" }
         if backupTask != nil, let progress {
             return "Backing up · module \(progress.moduleIndex + 1) of \(progress.moduleCount)"
@@ -140,6 +189,29 @@ final class Flow {
         busy = true
         defer { busy = false }
         error = nil
+        let hadSaved = UserDefaults.standard.string(forKey: Self.adapterKey) != nil
+        let diag: Diag
+        do {
+            diag = try await reachAdapter()
+        } catch {
+            var message = explain(error)
+            if hadSaved, UserDefaults.standard.string(forKey: Self.adapterKey) == nil {
+                message += "\nForgot the saved adapter; Connect scans for one next time."
+            }
+            self.error = message
+            return
+        }
+        do {
+            try await readVIN(diag: diag)
+        } catch {
+            self.error = explain(error)
+        }
+    }
+
+    /// Connects to the adapter and sets it up, for `connect()` and the check: forgets the car first unless the link
+    /// is up with its adapter set up, and forgets the saved adapter when the link does not connect, except in a task
+    /// that was cancelled, as a stopped check, where the failure is the stop's. Leaves `busy` to the caller.
+    private func reachAdapter() async throws -> Diag {
         if link.state != .ready || diag == nil {
             adapter = nil
             diag = nil
@@ -148,26 +220,20 @@ final class Flow {
         do {
             try await link.connect()
         } catch {
-            var message = explain(error)
-            if UserDefaults.standard.string(forKey: Self.adapterKey) != nil {
-                UserDefaults.standard.removeObject(forKey: Self.adapterKey)
-                message += "\nForgot the saved adapter; Connect scans for one next time."
-            }
-            self.error = message
-            return
+            if !Task.isCancelled { UserDefaults.standard.removeObject(forKey: Self.adapterKey) }
+            throw error
         }
         let diag = Diag(link: link, log: log)
         do {
             adapter = try await diag.setUp()
             self.diag = diag
+            return diag
         } catch {
             // The adapter is in no known setup, so nothing may use it until a setup succeeds.
             adapter = nil
             self.diag = nil
-            self.error = explain(error)
-            return
+            throw error
         }
-        await readVIN(diag: diag)
     }
 
     /// After a give-up: connects to the adapter again and, when the same car answers, leaves the owner where they are
@@ -207,18 +273,21 @@ final class Flow {
         forgetCar()
     }
 
-    /// Forgets the car read through the adapter and everything found on it, its fault read included, so that nothing
-    /// of one car is backed up under another's VIN or shown as another's codes.
+    /// Forgets the car read through the adapter and everything found on it, its fault read and what its last walk
+    /// covered included, so that nothing of one car is backed up under another's VIN or shown as another's codes.
     private func forgetCar() {
         diag?.expectedVIN = nil
         vin = nil
         car = nil
         otherCars = []
         modules = []
+        modulesFromFullWalk = false
+        silentSystems = 0
         progress = nil
         lastBackup = nil
         faultReport = nil
         faultReadAt = nil
+        faultSilent = 0
         writeTestReady = nil
         writeTestResults = [:]
     }
@@ -232,12 +301,16 @@ final class Flow {
         busy = true
         defer { busy = false }
         error = nil
-        await readVIN(diag: diag)
+        do {
+            try await readVIN(diag: diag)
+        } catch {
+            self.error = explain(error)
+        }
     }
 
     /// Reads the VIN and looks the car up in the car book. A different car from last time, or a failed read,
-    /// forgets the car read before and what was found on it.
-    private func readVIN(diag: Diag) async {
+    /// forgets the car read before and what was found on it; a failed read throws, for the caller to say why.
+    private func readVIN(diag: Diag) async throws {
         do {
             let vin = try await VIN.read(diag: diag)
             if vin != self.vin { forgetCar() }
@@ -248,7 +321,7 @@ final class Flow {
             otherCars = book.cars.filter { $0.vin != vin }
         } catch {
             forgetCar()
-            self.error = explain(error)
+            throw error
         }
     }
 
@@ -265,10 +338,12 @@ final class Flow {
         }
     }
 
-    /// Scans for modules with `scan`, holding `busy`, in a task `stopScan()` and `endDiscovery()` can stop. A stop says
-    /// nothing; any other failure says why in `error`. Returns whether a stop ended it.
+    /// Scans for modules with `scan`, holding `busy`, in a task `stopScan()` and `endDiscovery()` can stop. With `full`
+    /// the walk covers every address, as the Modules screen asks; without it only the systems remembered for the car,
+    /// while its last walk of every address is recent. A stop says nothing; any other failure says why in `error`.
+    /// Returns whether a stop ended it.
     @discardableResult
-    func discover() async -> Bool {
+    func discover(full: Bool = false) async -> Bool {
         guard let diag, let vin else { error = "Not connected"; return false }
         guard !busy else { error = "Still working"; return false }
         busy = true
@@ -276,7 +351,7 @@ final class Flow {
         let task = Task {
             defer { busy = false }
             do {
-                try await keepingAwake("Scanning the car") { try await scan(diag: diag, vin: vin) }
+                try await keepingAwake("Scanning the car") { try await scan(diag: diag, vin: vin, full: full) }
             } catch is CancellationError {
                 // Stopped: the list is empty, and there is nothing to say.
             } catch {
@@ -288,21 +363,34 @@ final class Flow {
         return task.isCancelled
     }
 
-    /// Probes every address and lists the modules that answer, as they answer, with `discovering` and `scanned`
-    /// following the walk; leaves `busy` to the caller. A walk that is cancelled or fails empties the list and throws,
-    /// so that no backup is ever made of part of the car.
-    private func scan(diag: Diag, vin: String) async throws {
+    /// Lists the modules that answer, as they answer, with `discovering`, `scanned` and `scanTotal` following the
+    /// walk; leaves `busy` to the caller. The walk is quick, asking only the car's remembered systems
+    /// (`KnownModules`), when not `full`, some are remembered and the car's last walk of every address is at most
+    /// `KnownModules.maxAge` old; any other walk probes every address, so a system a first walk missed is found within
+    /// a month. A walk of either kind that ends counts in `silentSystems` the remembered systems that did not answer,
+    /// which the check counts as unread. A walk of every address that ends with at least one module sets
+    /// `modulesFromFullWalk` and adds the answering addresses to those remembered for the VIN with the time, a failed
+    /// save only logged, as the file is a cache; any other walk that ends clears `modulesFromFullWalk` and saves
+    /// nothing. A walk that is cancelled or fails empties the list, saves nothing and throws, so that no backup is
+    /// ever made of part of the car.
+    private func scan(diag: Diag, vin: String, full: Bool) async throws {
+        let saved = KnownModules.load(from: file("known-modules.json"))
+        let remembered = saved.addresses(forVIN: vin) ?? []
+        let quick = !full && !remembered.isEmpty && saved.isRecent(forVIN: vin, at: .now)
+        // The addresses `Discovery` walks by default unless the remembered systems are asked.
+        let addresses = quick ? remembered : (UInt8.min...UInt8.max).filter { $0 != 0xF1 }
         discovering = true
-        defer { discovering = false }
+        scanQuick = quick
+        scanTotal = quick ? addresses.count : 255
+        defer { discovering = false; scanQuick = false }
         modules = []
         scanned = 0
         do {
-            // The addresses `Discovery` walks by default, one walk per address. A cancelled walk still finishes the
-            // address in progress, and nothing tells its consumer when; a walk of one address is done with `diag` once
-            // its stream ends. Each walk runs in a task of its own, which a stop does not cancel, so a stop waits for
-            // that end and leaves no request in flight.
-            for address in UInt8.min...UInt8.max where address != 0xF1 {
-                scanned = Int(address)
+            // One walk per address. A cancelled walk still finishes the address in progress, and nothing tells its
+            // consumer when; a walk of one address is done with `diag` once its stream ends. Each walk runs in a task
+            // of its own, which a stop does not cancel, so a stop waits for that end and leaves no request in flight.
+            for (index, address) in addresses.enumerated() {
+                scanned = quick ? index : Int(address)
                 try Task.checkCancellation()
                 modules += try await Task {
                     var found: [DiscoveredModule] = []
@@ -316,6 +404,17 @@ final class Flow {
             modules = []
             throw error
         }
+        silentSystems = remembered.count { address in !modules.contains { $0.address == address } }
+        modulesFromFullWalk = !quick && !modules.isEmpty
+        guard modulesFromFullWalk else { return }
+        // Loaded again: the walk took minutes, and the file is replaced as a whole.
+        var known = KnownModules.load(from: file("known-modules.json"))
+        known.remember(modules.map(\.address), forVIN: vin)
+        do {
+            try known.save(to: file("known-modules.json"))
+        } catch {
+            log.note("could not save the remembered systems: \(error.localizedDescription)")
+        }
     }
 
     /// Stops the scan `discover()` started, if it still runs, and waits until it no longer uses `diag`. A fault read's
@@ -325,9 +424,10 @@ final class Flow {
         await discoveryTask?.value
     }
 
-    /// Reads every module's fault codes and standard OBD-II, as the health check reads them, into `faultReport`, with
-    /// `readingFaults` following the read; scans for modules first when none is listed. Runs in a task `stopScan()` can
-    /// stop, which says Cancelled and keeps the report read before. Nothing is cleared.
+    /// Reads every module's fault codes and standard OBD-II with `readFaultCodes()`; scans for modules first when none
+    /// is listed, asking only the car's remembered systems while its last walk of every address is recent, and every
+    /// address otherwise. Runs in a task `stopScan()` can stop, which says Cancelled and keeps the report read before.
+    /// Nothing is cleared.
     func readFaults() async {
         guard let diag, let vin, !gaveUp else { error = "Not connected"; return }
         guard !busy else { error = "Still working"; return }
@@ -338,14 +438,10 @@ final class Flow {
             do {
                 try await keepingAwake("Reading the car's fault codes") {
                     if modules.isEmpty {
-                        try await scan(diag: diag, vin: vin)
+                        try await scan(diag: diag, vin: vin, full: false)
                         guard !modules.isEmpty else { error = "No module answered the scan"; return }
                     }
-                    guard case let (diag, car)? = connectedCar() else { error = "Not connected"; return }
-                    readingFaults = "Reading fault codes …"
-                    defer { readingFaults = nil }
-                    faultReport = try await Mechanic(diag: diag, car: car, log: log).healthCheck { readingFaults = $0 }
-                    faultReadAt = .now
+                    guard try await readFaultCodes() else { error = "Not connected"; return }
                 }
             } catch is CancellationError {
                 error = "Cancelled"
@@ -355,6 +451,102 @@ final class Flow {
         }
         readTask = task
         await task.value
+    }
+
+    /// Reads every listed module's fault codes and standard OBD-II, as the health check reads them, with
+    /// `readingFaults` following the read, and keeps the read with `storeFaults(_:)`. Leaves `busy` to the caller and
+    /// ends at the next request when its task is cancelled. Returns false, reading nothing, while no car is connected.
+    private func readFaultCodes() async throws -> Bool {
+        guard case let (diag, car)? = connectedCar() else { return false }
+        readingFaults = "Reading fault codes …"
+        defer { readingFaults = nil }
+        storeFaults(try await Mechanic(diag: diag, car: car, log: log).healthCheck { readingFaults = $0 })
+        return true
+    }
+
+    /// Keeps `report` as the car's last fault read, with the time and the remembered systems silent in the walk it
+    /// was read on: Fault codes', the check's and the mechanic's health check's. Clears the last check's problem line,
+    /// which the newer read answers; a check whose read nothing answered sets it again after this.
+    func storeFaults(_ report: HealthCheck) {
+        checkProblem = nil
+        faultReport = report
+        faultReadAt = .now
+        faultSilent = silentSystems
+    }
+
+    /// Check my car: connects when there is no usable adapter, reads the car when no VIN is known, looks for its
+    /// systems when none is listed or some remembered ones were silent in the last walk, a quick walk of the remembered
+    /// systems while the car's last walk of every address is at most 30 days old and a walk of every address otherwise,
+    /// then reads the fault codes, with `checkStep` at the step it runs. Holds `busy` throughout, in a task
+    /// `stopCheck()` can stop. The VIN read runs in a task of its own, which the stop does not cancel; the walk and the
+    /// fault read end at their next request. A stop says nothing. A step that fails, or a car that does not answer,
+    /// says so in `checkProblem`; the error still goes through `explain(_:)` for its effects, its text to the log, and
+    /// `error` stays nil. An error that ends a stopped check goes through `explain(_:)` too, and only its problem line
+    /// is left out. Does nothing while the link reconnects by itself, as `connect()`.
+    func checkCar() async {
+        guard !reconnecting else { return }
+        guard !busy else { error = "Still working"; return }
+        busy = true
+        error = nil
+        checkProblem = nil
+        let task = Task {
+            defer { busy = false; checkStep = nil }
+            await keepingAwake("Checking the car") { await runCheck() }
+        }
+        checkTask = task
+        await task.value
+    }
+
+    /// The check's steps in order; see `checkCar()`.
+    private func runCheck() async {
+        var step = CheckStep.connecting
+        do {
+            if diag == nil || gaveUp || (link.state != .ready && !reconnecting) {
+                checkStep = step
+                _ = try await reachAdapter()
+            }
+            try Task.checkCancellation()
+            guard let diag else { throw LinkError.disconnected }
+            if vin == nil {
+                step = .readingCar
+                checkStep = step
+                try await Task { try await readVIN(diag: diag) }.value
+                try Task.checkCancellation()
+            }
+            guard let vin else { throw VINError.noVIN }
+            if modules.isEmpty || silentSystems > 0 {
+                step = .findingSystems
+                checkStep = step
+                try await scan(diag: diag, vin: vin, full: false)
+                guard !modules.isEmpty else {
+                    try Task.checkCancellation()  // a stop after the walk's last request says nothing
+                    checkProblem = CheckProblem.silentCar
+                    return
+                }
+            }
+            try Task.checkCancellation()
+            step = .readingFaults
+            checkStep = step
+            guard try await readFaultCodes() else { throw LinkError.disconnected }
+            if faultReport?.nothingAnswered == true {
+                try Task.checkCancellation()  // a stop after the read's last request says nothing
+                checkProblem = CheckProblem.silentCar
+            }
+        } catch {
+            // Its effects on the adapter and the car happen even when a stop ended the check.
+            let text = explain(error)
+            self.error = nil
+            guard !Task.isCancelled else { return }  // stopped: the card goes back to how it was
+            checkProblem = CheckProblem.line(for: error, connecting: step == .connecting)
+            log.note(text)
+        }
+    }
+
+    /// Stops the check in progress: while it connects by dropping the adapter, as Disconnect does, later after the
+    /// request in flight.
+    func stopCheck() {
+        if checkStep == .connecting { disconnect() }
+        checkTask?.cancel()
     }
 
     /// Checks the module at `address`, as `modules` lists it, against the car's newest complete backup of it with
@@ -440,8 +632,8 @@ final class Flow {
     /// Stops the write run in progress; it ends after the identifier it is on.
     func stopWriteTest() { writeTestTask?.cancel() }
 
-    /// Stops the scan or the fault read in progress; a backup has its own Cancel.
-    func stopScan() { discoveryTask?.cancel(); readTask?.cancel() }
+    /// Stops the scan, the fault read or the check in progress; a backup has its own Cancel.
+    func stopScan() { discoveryTask?.cancel(); readTask?.cancel(); stopCheck() }
 
     /// The `Diag` to the connected car and the car as the mechanic sees it; nil when no car is connected with its VIN
     /// read, as after a give-up.
@@ -453,11 +645,12 @@ final class Flow {
         return (diag, car)
     }
 
-    /// Starts a backup of every listed module into one file in the Backups folder, scanning for the modules first
-    /// with `scan` when none is listed; a scan that finds none writes no file. Refused while a scan runs, which is left
-    /// to finish. `progress` follows the run, `lastBackup` is the file once it is written, and an error or a cancel, in
-    /// either stage, ends up in `error`. A full rescan sweeps every module in full even where a set of identifiers is
-    /// remembered.
+    /// Starts a backup of every listed module into one file in the Backups folder, scanning for the modules first with
+    /// `scan` when none is listed, or when the list came from a quick walk of the remembered systems, which would leave
+    /// modules out of the backup: the scan then covers every address. A scan that finds none writes no file. Refused
+    /// while a scan runs, which is left to finish. `progress` follows the run, `lastBackup` is the file once it is
+    /// written, and an error or a cancel, in either stage, ends up in `error`. A full rescan sweeps every module in
+    /// full even where a set of identifiers is remembered.
     func backup(fullRescan: Bool) {
         guard backupTask == nil else { error = "Still working"; return }
         backupTask = Task {
@@ -473,7 +666,7 @@ final class Flow {
             // A first sweep takes an hour; sleep would drop the adapter. The Mac stays awake, the iPhone's screen on.
             await keepingAwake("Backing up the car") {
                 do {
-                    if modules.isEmpty { try await scan(diag: diag, vin: vin) }
+                    if modules.isEmpty || !modulesFromFullWalk { try await scan(diag: diag, vin: vin, full: true) }
                     guard !modules.isEmpty else { error = "No module answered the scan"; return }
                     lastBackup = try await BackupRunner.run(
                         diag: diag, modules: modules, vin: vin, nickname: car?.nickname ?? "", adapter: adapter,
